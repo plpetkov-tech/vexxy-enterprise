@@ -1,5 +1,7 @@
 """
 Celery tasks for premium analysis
+
+Uses Kubescape for runtime analysis and VEX generation.
 """
 from celery import Task
 from datetime import datetime
@@ -8,15 +10,18 @@ import traceback
 
 from .celery_app import celery_app
 from models import SessionLocal, PremiumAnalysisJob, JobStatus
-from .tasks_impl import (
+
+# Use Kubescape-based implementation
+from .tasks_impl_kubescape import (
     update_job_status as _update_job_status,
-    setup_sandbox as _setup_sandbox,
-    start_container_with_profiling as _start_container_with_profiling,
-    execute_tests as _execute_tests,
-    collect_execution_profile as _collect_execution_profile,
-    analyze_reachability as _analyze_reachability,
-    generate_vex_document as _generate_vex_document,
-    cleanup_sandbox as _cleanup_sandbox,
+    ensure_kubescape_installed as _ensure_kubescape_installed,
+    deploy_workload_for_analysis as _deploy_workload,
+    wait_for_workload_ready as _wait_for_workload_ready,
+    wait_for_kubescape_analysis as _wait_for_kubescape_analysis,
+    extract_kubescape_results as _extract_kubescape_results,
+    process_kubescape_vex as _process_kubescape_vex,
+    generate_analysis_summary as _generate_analysis_summary,
+    cleanup_workload as _cleanup_workload,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,16 +60,15 @@ class AnalysisTask(Task):
 @celery_app.task(base=AnalysisTask, bind=True, name="run_premium_analysis")
 def run_premium_analysis(self, job_id: str, image_ref: str, image_digest: str, config: dict):
     """
-    Main task for premium analysis
+    Main task for premium analysis using Kubescape
 
-    Phases:
-    1. Setup sandbox
-    2. Run container with profiling
-    3. Execute tests/fuzzing
-    4. Collect execution profile
-    5. Analyze reachability
-    6. Generate VEX
-    7. Cleanup
+    New Phases (Kubescape-based):
+    1. Ensure Kubescape is installed
+    2. Deploy workload for analysis
+    3. Wait for Kubescape runtime analysis
+    4. Extract VEX and filtered SBOM from Kubescape
+    5. Process and save results
+    6. Cleanup
 
     Args:
         job_id: UUID of the analysis job
@@ -72,10 +76,10 @@ def run_premium_analysis(self, job_id: str, image_ref: str, image_digest: str, c
         image_digest: Image digest (sha256:...)
         config: Analysis configuration dictionary
     """
-    logger.info(f"Starting premium analysis for job {job_id}")
+    logger.info(f"Starting Kubescape-based premium analysis for job {job_id}")
 
     db = SessionLocal()
-    sandbox_id = None
+    deployment_name = None
 
     try:
         # Get job from database
@@ -89,56 +93,86 @@ def run_premium_analysis(self, job_id: str, image_ref: str, image_digest: str, c
         # Update status to running
         _update_job_status(db, job, JobStatus.RUNNING, 0, "Initializing")
 
-        # Phase 1: Setup sandbox
-        logger.info(f"[{job_id}] Phase 1: Setting up sandbox")
-        _update_job_status(db, job, JobStatus.RUNNING, 10, "Setting up sandbox")
-        sandbox_id = _setup_sandbox(job, image_ref, image_digest, config)
-        job.sandbox_id = sandbox_id
+        # Phase 1: Ensure Kubescape is installed
+        logger.info(f"[{job_id}] Phase 1: Checking Kubescape installation")
+        _update_job_status(db, job, JobStatus.RUNNING, 5, "Checking Kubescape")
+        if not _ensure_kubescape_installed():
+            raise RuntimeError("Kubescape installation failed")
+
+        # Phase 2: Deploy workload for analysis
+        logger.info(f"[{job_id}] Phase 2: Deploying workload for analysis")
+        _update_job_status(db, job, JobStatus.RUNNING, 15, "Deploying workload")
+        deployment_name = _deploy_workload(job, image_ref, image_digest, config)
+        job.sandbox_id = deployment_name  # Store deployment name as sandbox_id
         db.commit()
 
-        # Phase 2: Start container with profiling
-        logger.info(f"[{job_id}] Phase 2: Starting container with profiling")
-        _update_job_status(db, job, JobStatus.RUNNING, 30, "Starting container")
-        _start_container_with_profiling(sandbox_id, config)
+        # Phase 3: Wait for workload to be ready
+        logger.info(f"[{job_id}] Phase 3: Waiting for workload ready")
+        _update_job_status(db, job, JobStatus.RUNNING, 25, "Workload starting")
+        if not _wait_for_workload_ready(deployment_name, timeout=120):
+            raise RuntimeError("Workload failed to become ready")
 
-        # Phase 3: Execute tests
-        logger.info(f"[{job_id}] Phase 3: Running tests and fuzzing")
-        _update_job_status(db, job, JobStatus.RUNNING, 50, "Executing tests")
-        _execute_tests(sandbox_id, config)
+        # Phase 4: Wait for Kubescape runtime analysis
+        logger.info(f"[{job_id}] Phase 4: Kubescape runtime analysis")
+        _update_job_status(db, job, JobStatus.RUNNING, 35, "Runtime analysis")
 
-        # Phase 4: Collect execution profile
-        logger.info(f"[{job_id}] Phase 4: Collecting execution profile")
-        _update_job_status(db, job, JobStatus.ANALYZING, 70, "Analyzing execution")
-        execution_profile = _collect_execution_profile(sandbox_id, str(job.id))
-        job.execution_profile = execution_profile
+        # Get analysis duration from config (default 5 minutes)
+        analysis_duration = config.get("analysis_duration", 300)
+        logger.info(f"Runtime analysis will run for {analysis_duration} seconds")
+
+        if not _wait_for_kubescape_analysis(deployment_name, analysis_duration):
+            logger.warning("Kubescape analysis timeout, will attempt to extract results anyway")
+
+        # Phase 5: Extract Kubescape results
+        logger.info(f"[{job_id}] Phase 5: Extracting Kubescape results")
+        _update_job_status(db, job, JobStatus.ANALYZING, 75, "Extracting results")
+        kubescape_results = _extract_kubescape_results(
+            deployment_name=deployment_name,
+            image_digest=image_digest,
+            job_id=str(job.id)
+        )
+
+        if not kubescape_results.get("has_vex"):
+            logger.warning("No VEX document generated by Kubescape")
+
+        if not kubescape_results.get("has_filtered_sbom"):
+            logger.warning("No filtered SBOM generated by Kubescape")
+
+        # Phase 6: Process VEX document
+        logger.info(f"[{job_id}] Phase 6: Processing VEX document")
+        _update_job_status(db, job, JobStatus.ANALYZING, 85, "Processing VEX")
+        vex_document = _process_kubescape_vex(
+            vex_document=kubescape_results.get("vex_document"),
+            job=job
+        )
+
+        # Phase 7: Generate summary
+        logger.info(f"[{job_id}] Phase 7: Generating analysis summary")
+        _update_job_status(db, job, JobStatus.ANALYZING, 95, "Generating summary")
+        summary = _generate_analysis_summary(
+            vex_document=vex_document,
+            filtered_sbom=kubescape_results.get("filtered_sbom")
+        )
+
+        # Save results to job
+        job.reachability_results = summary
+        job.execution_profile = {
+            "method": "kubescape_runtime",
+            "vex_statements": len(vex_document.get("statements", [])),
+            "filtered_components": len(kubescape_results.get("filtered_sbom", {}).get("components", []))
+        }
         db.commit()
-
-        # Phase 5: Analyze reachability
-        logger.info(f"[{job_id}] Phase 5: Analyzing reachability")
-        _update_job_status(db, job, JobStatus.ANALYZING, 85, "Determining reachability")
-        reachability_results = _analyze_reachability(execution_profile, image_digest, config, str(job.id))
-        job.reachability_results = reachability_results
-        db.commit()
-
-        # Phase 6: Generate VEX
-        logger.info(f"[{job_id}] Phase 6: Generating VEX document")
-        _update_job_status(db, job, JobStatus.ANALYZING, 95, "Generating VEX")
-        vex_document = _generate_vex_document(reachability_results, execution_profile, job)
-
-        # Phase 7: Save results
-        logger.info(f"[{job_id}] Phase 7: Saving results")
-        # TODO: Save VEX to storage and get ID
-        # job.generated_vex_id = vex_id
 
         # Complete
         _update_job_status(db, job, JobStatus.COMPLETE, 100, "Complete")
         logger.info(f"[{job_id}] Analysis completed successfully")
+        logger.info(f"[{job_id}] Summary: {summary}")
 
         return {
             "status": "success",
             "job_id": job_id,
-            "execution_profile": execution_profile,
-            "reachability_results": reachability_results,
+            "vex_document": vex_document,
+            "summary": summary,
         }
 
     except Exception as e:
@@ -162,4 +196,13 @@ def run_premium_analysis(self, job_id: str, image_ref: str, image_digest: str, c
         raise
 
     finally:
-        # Always cleanup sandbox
+        # Always cleanup deployment
+        if deployment_name:
+            try:
+                logger.info(f"[{job_id}] Cleaning up deployment {deployment_name}")
+                _cleanup_workload(deployment_name)
+            except Exception as cleanup_error:
+                logger.error(f"[{job_id}] Cleanup failed: {cleanup_error}")
+
+        # Close database session
+        db.close()

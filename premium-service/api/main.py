@@ -135,14 +135,26 @@ async def submit_analysis(
 
     logger.info(f"Created analysis job {job.id}")
 
-    # TODO: Queue the job in Celery
-    # from workers.tasks import run_premium_analysis
-    # run_premium_analysis.delay(
-    #     job_id=str(job.id),
-    #     image_ref=request.image_ref,
-    #     image_digest=request.image_digest,
-    #     config=request.config.model_dump()
-    # )
+    # Queue the job in Celery for Kubescape-based analysis
+    from workers.tasks import run_premium_analysis
+
+    # Prepare config with analysis settings
+    config = {}
+    if request.config:
+        config = request.config.model_dump()
+
+    # Set default analysis duration if not specified (5 minutes)
+    if "analysis_duration" not in config:
+        config["analysis_duration"] = 300
+
+    run_premium_analysis.delay(
+        job_id=str(job.id),
+        image_ref=request.image_ref,
+        image_digest=request.image_digest,
+        config=config
+    )
+
+    logger.info(f"Queued analysis job {job.id} in Celery")
 
     return AnalysisJobResponse(
         job_id=job.id,
