@@ -6,6 +6,7 @@ from .profiler import ProfilerService, ExecutionProfile, TraceeParser
 from .reachability import ReachabilityAnalyzer, ReachabilityResult, VulnerabilityStatus
 from .evidence import EvidenceStorage
 from .sbom import SBOMService, MockSBOMService
+from .kubescape import KubescapeService
 
 __all__ = [
     "SandboxManager",
@@ -18,4 +19,5 @@ __all__ = [
     "EvidenceStorage",
     "SBOMService",
     "MockSBOMService",
+    "KubescapeService",
 ]

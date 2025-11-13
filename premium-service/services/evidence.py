@@ -146,3 +146,21 @@ class EvidenceStorage:
             data=json.dumps(results, indent=2),
             description="OWASP ZAP fuzzing results"
         )
+
+    def store_vex_document(self, job_id: UUID, vex_document: Dict) -> str:
+        """Store VEX document from Kubescape"""
+        return self.store_evidence(
+            job_id=job_id,
+            evidence_type=EvidenceType.PROFILER_OUTPUT,  # Reuse existing type
+            data=json.dumps(vex_document, indent=2),
+            description="Kubescape runtime VEX document"
+        )
+
+    def store_filtered_sbom(self, job_id: UUID, filtered_sbom: Dict) -> str:
+        """Store filtered SBOM from Kubescape"""
+        return self.store_evidence(
+            job_id=job_id,
+            evidence_type=EvidenceType.EXECUTION_TRACE,  # Reuse existing type
+            data=json.dumps(filtered_sbom, indent=2),
+            description="Kubescape filtered SBOM (relevant components only)"
+        )

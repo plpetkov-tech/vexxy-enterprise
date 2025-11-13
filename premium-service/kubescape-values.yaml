@@ -1,0 +1,59 @@
+# Kubescape Helm Values for VEXxy Premium Service
+# This configuration enables runtime analysis and VEX generation
+
+# Enable relevancy analysis (filtered SBOMs)
+capabilities:
+  relevancy: enable
+  vulnerabilityScan: enable
+  configurationScan: disable  # We only need vulnerability analysis
+
+# Node Agent - Required for runtime analysis
+nodeAgent:
+  enabled: true
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Kubevuln - Vulnerability scanner
+kubevuln:
+  enabled: true
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+# Storage - Required for CRDs
+storage:
+  enabled: true
+
+# Offline vulnerability database
+grypeOfflineDB:
+  enabled: true
+
+# Kubescape configuration
+kubescape:
+  # Generate VEX documents
+  generateVEX: true
+
+  # Store filtered SBOMs (only relevant components)
+  storeFilteredSbom: true
+
+  # Scan interval (how often to re-scan)
+  scanIntervalMinutes: 1440  # Daily
+
+# Operator configuration
+operator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
