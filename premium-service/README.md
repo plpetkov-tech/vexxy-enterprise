@@ -1,0 +1,477 @@
+# VEXxy Premium Analysis Service
+
+**Automated reachability-based VEX generation through runtime analysis**
+
+This service provides the Ultimate tier feature for VEXxy - proving vulnerability reachability through runtime evidence, not just static analysis.
+
+---
+
+## Features
+
+- 🔒 **Isolated Sandbox Execution** - Kubernetes Jobs with gVisor isolation
+- 📊 **Runtime Profiling** - eBPF-based execution tracking with Tracee
+- 🔍 **Security Fuzzing** - OWASP ZAP for web application testing
+- 🎯 **Reachability Analysis** - CVE → Code → Executed? with confidence scores
+- 📄 **Automated VEX Generation** - OpenVEX documents with cryptographic evidence
+- ⚡ **Async Processing** - Celery workers for scalable analysis
+- 📈 **Progress Tracking** - Real-time job status and progress updates
+
+---
+
+## Architecture
+
+```
+┌─────────────────┐
+│  FastAPI API    │ ← REST API for job submission
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Celery Worker   │ ← Async processing
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│  Kubernetes Sandbox Manager         │
+│  • Creates isolated Jobs            │
+│  • Manages profiling sidecars       │
+│  • Collects execution evidence      │
+└────────┬────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│  Reachability Analyzer              │
+│  • Maps CVEs to code                │
+│  • Determines execution status      │
+│  • Calculates confidence scores     │
+└────────┬────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│  VEX Document Generator             │
+│  • OpenVEX format                   │
+│  • Evidence attachment              │
+│  • Cryptographic signing            │
+└─────────────────────────────────────┘
+```
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.11+
+- Docker & Docker Compose
+- PostgreSQL 15+
+- Redis 7+
+- Kubernetes cluster (for sandbox execution)
+
+### 1. Clone and Setup
+
+```bash
+cd premium-service
+
+# Copy environment file
+cp .env.example .env
+
+# Edit .env with your settings
+nano .env
+```
+
+### 2. Start Services (Docker Compose)
+
+```bash
+# Start all services
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Check status
+docker-compose ps
+```
+
+Services:
+- **API**: http://localhost:8001 (FastAPI)
+- **Flower**: http://localhost:5555 (Celery monitoring)
+- **PostgreSQL**: localhost:5432
+- **Redis**: localhost:6379
+
+### 3. Initialize Database
+
+```bash
+# Create database tables
+docker-compose exec api python -c "from models.database import init_db; init_db()"
+
+# Or with Alembic (TODO: set up migrations)
+# docker-compose exec api alembic upgrade head
+```
+
+### 4. Test API
+
+```bash
+# Health check
+curl http://localhost:8001/health
+
+# Submit analysis job
+curl -X POST http://localhost:8001/api/v1/analysis/submit \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_ref": "nginx:latest",
+    "image_digest": "sha256:4c0fdaa8b6341bfdeca5f18f7a2a65e6f4c7e37e32c66c62a7f0c6b9e4e71e5e",
+    "config": {
+      "enable_fuzzing": true,
+      "test_timeout": 300
+    }
+  }'
+
+# Get job status (use job_id from above response)
+curl http://localhost:8001/api/v1/analysis/{job_id}/status
+
+# List all jobs
+curl http://localhost:8001/api/v1/analysis
+```
+
+### 5. API Documentation
+
+- **Swagger UI**: http://localhost:8001/docs
+- **ReDoc**: http://localhost:8001/redoc
+
+---
+
+## Development
+
+### Local Setup (without Docker)
+
+```bash
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # or `venv\Scripts\activate` on Windows
+
+# Install dependencies
+pip install -r requirements.txt
+pip install -r requirements-dev.txt
+
+# Set environment variables
+export DATABASE_URL=postgresql://vexxy:vexxy@localhost:5432/vexxy_premium
+export REDIS_URL=redis://localhost:6379/0
+
+# Run API server
+python api/main.py
+# or with uvicorn
+uvicorn api.main:app --reload --port 8001
+
+# Run Celery worker (in another terminal)
+celery -A workers.celery_app worker --loglevel=info
+
+# Run Celery Flower (monitoring)
+celery -A workers.celery_app flower --port=5555
+```
+
+### Running Tests
+
+```bash
+# Install test dependencies
+pip install -r requirements-dev.txt
+
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=. --cov-report=html
+
+# Run specific test file
+pytest tests/test_api.py
+
+# Run specific test
+pytest tests/test_api.py::test_health_check -v
+```
+
+### Code Quality
+
+```bash
+# Format code with black
+black .
+
+# Sort imports
+isort .
+
+# Lint with ruff
+ruff check .
+
+# Type checking with mypy
+mypy .
+```
+
+---
+
+## API Reference
+
+### Submit Analysis
+
+**POST** `/api/v1/analysis/submit`
+
+Submit container image for premium reachability analysis.
+
+**Request:**
+```json
+{
+  "image_ref": "nginx:latest",
+  "image_digest": "sha256:abc123...",
+  "sbom_id": "optional-uuid",
+  "config": {
+    "test_script": "optional custom script",
+    "test_timeout": 300,
+    "enable_fuzzing": true,
+    "enable_profiling": true,
+    "ports": [8080, 443],
+    "environment": {
+      "ENV_VAR": "value"
+    }
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "job_id": "uuid",
+  "status": "queued",
+  "image_ref": "nginx:latest",
+  "image_digest": "sha256:abc123...",
+  "estimated_duration_minutes": 10,
+  "created_at": "2025-11-13T10:00:00Z"
+}
+```
+
+### Get Status
+
+**GET** `/api/v1/analysis/{job_id}/status`
+
+Get current status of analysis job.
+
+**Response:**
+```json
+{
+  "job_id": "uuid",
+  "status": "running",
+  "progress_percent": 50,
+  "current_phase": "Executing tests",
+  "started_at": "2025-11-13T10:00:00Z",
+  "completed_at": null,
+  "error_message": null
+}
+```
+
+### Get Results
+
+**GET** `/api/v1/analysis/{job_id}/results`
+
+Get analysis results (only when status is "complete").
+
+**Response:**
+```json
+{
+  "job_id": "uuid",
+  "status": "complete",
+  "image_ref": "nginx:latest",
+  "image_digest": "sha256:abc123...",
+  "execution_profile": {
+    "duration_seconds": 120,
+    "files_accessed": ["/app/main.py"],
+    "syscalls": ["read", "write"],
+    "code_coverage_percent": 85.0
+  },
+  "reachability_results": [
+    {
+      "cve_id": "CVE-2024-12345",
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "confidence_score": 0.87,
+      "reason": "Vulnerable function exists but was not executed"
+    }
+  ],
+  "generated_vex_id": "uuid"
+}
+```
+
+### Cancel Analysis
+
+**DELETE** `/api/v1/analysis/{job_id}`
+
+Cancel running analysis job.
+
+---
+
+## Configuration
+
+All configuration is done via environment variables (see `.env.example`).
+
+**Key Settings:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | - | PostgreSQL connection string |
+| `REDIS_URL` | - | Redis connection string |
+| `K8S_SANDBOX_NAMESPACE` | `vexxy-sandbox` | Kubernetes namespace for sandbox jobs |
+| `SANDBOX_CPU_LIMIT` | `2` | CPU limit for sandbox containers |
+| `SANDBOX_MEMORY_LIMIT` | `4Gi` | Memory limit for sandbox containers |
+| `DEFAULT_ANALYSIS_TIMEOUT` | `900` | Default analysis timeout (seconds) |
+
+---
+
+## Kubernetes Setup
+
+The service requires a Kubernetes cluster for sandbox execution.
+
+### 1. Create Namespace
+
+```bash
+kubectl create namespace vexxy-sandbox
+```
+
+### 2. Set Up RBAC (TODO)
+
+```bash
+# Create service account and role binding
+kubectl apply -f k8s/rbac.yaml
+```
+
+### 3. Configure Access
+
+**Local development:**
+- Use `~/.kube/config`
+- Set `K8S_IN_CLUSTER=false`
+
+**Production (in-cluster):**
+- Use service account
+- Set `K8S_IN_CLUSTER=true`
+
+---
+
+## Monitoring
+
+### Celery Flower
+
+Monitor Celery workers and tasks:
+
+http://localhost:5555
+
+- Task history
+- Worker status
+- Task execution times
+- Failed tasks
+
+### Prometheus Metrics (TODO)
+
+Expose metrics on port 9090:
+
+- Analysis jobs submitted
+- Analysis jobs completed
+- Analysis duration
+- Sandbox job failures
+
+---
+
+## Troubleshooting
+
+### Database Connection Errors
+
+```bash
+# Check PostgreSQL is running
+docker-compose ps postgres
+
+# Test connection
+docker-compose exec postgres psql -U vexxy -d vexxy_premium -c "SELECT 1;"
+```
+
+### Celery Worker Not Processing Jobs
+
+```bash
+# Check worker logs
+docker-compose logs -f worker
+
+# Check Redis connection
+docker-compose exec redis redis-cli ping
+
+# Restart worker
+docker-compose restart worker
+```
+
+### Kubernetes Job Failures
+
+```bash
+# List sandbox jobs
+kubectl get jobs -n vexxy-sandbox
+
+# Check job logs
+kubectl logs -n vexxy-sandbox job/vex-analysis-abc123
+
+# Describe job
+kubectl describe job -n vexxy-sandbox vex-analysis-abc123
+
+# Clean up failed jobs
+kubectl delete jobs -n vexxy-sandbox --field-selector status.successful=0
+```
+
+---
+
+## Development Roadmap
+
+### ✅ Phase 1: MVP (Weeks 1-2) - IN PROGRESS
+- [x] FastAPI service skeleton
+- [x] Database models
+- [x] Celery workers
+- [x] Basic K8s sandbox manager
+- [ ] Job status tracking
+- [ ] End-to-end test
+
+### 🔄 Phase 2: Runtime Analysis (Weeks 3-4)
+- [ ] Tracee integration (eBPF profiling)
+- [ ] Execution profile collection
+- [ ] Basic reachability algorithm
+- [ ] Evidence collection
+
+### 📋 Phase 3: VEX Generation (Weeks 5-6)
+- [ ] OpenVEX document generation
+- [ ] Confidence scoring
+- [ ] Callback to vexxy backend
+- [ ] UI integration
+- [ ] Quota enforcement
+
+### 🔒 Phase 4: Production (Weeks 7-8)
+- [ ] Security hardening
+- [ ] gVisor isolation
+- [ ] Monitoring and alerts
+- [ ] Performance optimization
+
+---
+
+## Contributing
+
+This is a private repository. For team members:
+
+1. Create feature branch
+2. Make changes
+3. Run tests: `pytest`
+4. Format code: `black . && isort .`
+5. Submit PR
+
+---
+
+## License
+
+**Proprietary** - VEXxy Enterprise Edition
+
+---
+
+## Support
+
+- **Issues**: Open GitHub issue
+- **Questions**: Contact team
+- **Documentation**: See `/docs` directory (TODO)
+
+---
+
+**Built with ❤️ for the VEXxy Ultimate Tier**
