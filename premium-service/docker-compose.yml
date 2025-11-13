@@ -98,6 +98,11 @@ services:
     environment:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
+      K8S_IN_CLUSTER: "false"
+      KUBECONFIG: /root/.kube/config
+    volumes:
+      - .:/app
+      - ${HOME}/.kube/config:/root/.kube/config:ro
     depends_on:
       - redis
     restart: unless-stopped
