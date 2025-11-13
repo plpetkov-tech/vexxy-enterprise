@@ -13,14 +13,23 @@ from models import JobStatus
 
 logger = logging.getLogger(__name__)
 
-# Initialize services
+# Initialize services (lazy initialization for KubescapeService)
 from services import (
     KubescapeService,
     EvidenceStorage,
 )
 
-kubescape_service = KubescapeService()
+# Lazy initialization to avoid loading kube config at import time
+_kubescape_service = None
 evidence_storage = EvidenceStorage()
+
+
+def get_kubescape_service() -> KubescapeService:
+    """Get or create KubescapeService instance (lazy initialization)"""
+    global _kubescape_service
+    if _kubescape_service is None:
+        _kubescape_service = KubescapeService()
+    return _kubescape_service
 
 
 def update_job_status(db, job, status: JobStatus, progress: int, phase: str):
@@ -47,6 +56,7 @@ def ensure_kubescape_installed() -> bool:
     """
     logger.info("Checking Kubescape installation...")
 
+    kubescape_service = get_kubescape_service()
     if kubescape_service.is_kubescape_installed():
         logger.info("Kubescape is already installed")
         return True
@@ -82,6 +92,7 @@ def deploy_workload_for_analysis(
     """
     logger.info(f"Deploying workload for Kubescape analysis: {image_ref}@{image_digest}")
 
+    kubescape_service = get_kubescape_service()
     deployment_name = kubescape_service.deploy_workload_for_analysis(
         job_id=str(job.id),
         image_ref=image_ref,
@@ -109,6 +120,7 @@ def wait_for_workload_ready(deployment_name: str, timeout: int = 120) -> bool:
     import time
     start_time = time.time()
 
+    kubescape_service = get_kubescape_service()
     while time.time() - start_time < timeout:
         status = kubescape_service.get_deployment_status(deployment_name)
 
@@ -142,6 +154,7 @@ def wait_for_kubescape_analysis(
     # Add buffer time for Kubescape to process
     timeout = analysis_duration + 120
 
+    kubescape_service = get_kubescape_service()
     success = kubescape_service.wait_for_kubescape_analysis(
         deployment_name=deployment_name,
         timeout_seconds=timeout
@@ -174,6 +187,7 @@ def extract_kubescape_results(
     logger.info(f"Extracting Kubescape analysis results for {deployment_name}")
 
     # Extract both VEX and filtered SBOM
+    kubescape_service = get_kubescape_service()
     vex_document, filtered_sbom = kubescape_service.extract_kubescape_analysis(
         deployment_name=deployment_name,
         image_digest=image_digest
@@ -289,6 +303,7 @@ def cleanup_workload(deployment_name: str):
     logger.info(f"Cleaning up workload {deployment_name}")
 
     try:
+        kubescape_service = get_kubescape_service()
         kubescape_service.delete_workload(deployment_name)
         logger.info(f"Workload {deployment_name} cleaned up")
     except Exception as e:
