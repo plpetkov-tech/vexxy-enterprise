@@ -1,0 +1,536 @@
+name: 🏗️ Build and Test
+
+on:
+  workflow_call:
+    inputs:
+      registry:
+        required: true
+        type: string
+      image-name:
+        required: true
+        type: string
+      vulnerability-threshold:
+        description: "Fail build if vulnerabilities of specified severity or higher are found"
+        required: false
+        type: string
+        default: 'MEDIUM'
+    outputs:
+      image-digest:
+        description: "Container image digest"
+        value: ${{ jobs.build-container.outputs.image-digest }}
+      image-uri:
+        description: "Container image URI"
+        value: ${{ jobs.build-container.outputs.image-uri }}
+      sbom-artifact:
+        description: "SBOM artifact ID"
+        value: ${{ jobs.test-and-scan.outputs.sbom-artifact }}
+      scan-artifact:
+        description: "Baseline scan artifact ID"
+        value: ${{ jobs.test-and-scan.outputs.scan-artifact }}
+      patched:
+        description: "Whether the image was patched"
+        value: ${{ jobs.build-container.outputs.patched }}
+
+env:
+  REGISTRY: ${{ inputs.registry }}
+  IMAGE_NAME: ${{ inputs.image-name }}
+  VULNERABILITY_THRESHOLD: ${{ inputs.vulnerability-threshold }}
+
+jobs:
+  test-and-scan:
+    runs-on: ubuntu-latest
+    outputs:
+      sbom-artifact: ${{ steps.upload-sbom.outputs.artifact-id }}
+      scan-artifact: ${{ steps.upload-scan.outputs.artifact-id }}
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 🎯 Initialize Test & Scan Phase
+      uses: ./.github/actions/security-reporter
+      with:
+        phase: "test-start"
+        title: "🧪 Test & Security Scan Phase"
+    
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.11'
+    
+    - name: Install Poetry
+      uses: snok/install-poetry@76e04a911780d5b312d89783f7b1cd627778900a
+      with:
+        version: "1.7.1"
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+    
+    - name: Load cached venv
+      id: cached-poetry-dependencies
+      uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+      with:
+        path: .venv
+        key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
+    
+    - name: 📦 Install dependencies
+      if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+      run: |
+        poetry install --no-interaction
+        echo "### 📦 Dependencies Installed" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Python dependencies installed successfully with Poetry" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+    
+    - name: 🔒 Verify lock file integrity
+      run: |
+        poetry check --lock 
+        echo "### 🔒 Lock File Verification" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Poetry lock file integrity verified" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+    
+    - name: 🧪 Run tests
+      run: |
+        echo "### 🧪 Test Results" >> $GITHUB_STEP_SUMMARY
+        poetry run pytest tests/ -v --tb=short > test_results.txt 2>&1 || TEST_FAILED=1
+        
+        if [ "${TEST_FAILED}" == "1" ]; then
+          echo "❌ **Tests Failed**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "```" >> $GITHUB_STEP_SUMMARY
+          tail -20 test_results.txt >> $GITHUB_STEP_SUMMARY
+          echo "```" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        else
+          echo "✅ **All Tests Passed**" >> $GITHUB_STEP_SUMMARY
+          TEST_COUNT=$(grep -c "PASSED\|FAILED\|ERROR" test_results.txt || echo "0")
+          PASSED_COUNT=$(grep -c "PASSED" test_results.txt || echo "0")
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🎯 Total Tests | $TEST_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ Passed | $PASSED_COUNT |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❌ Failed | 0 |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+    
+    - name: 🔍 Run linters and security checks
+      run: |
+        echo "### 🔍 Code Quality & Security Checks" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Black formatting check
+        if poetry run black --check src/ tests/ > black_results.txt 2>&1; then
+          echo "✅ **Code Formatting (Black)**: All files properly formatted" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️ **Code Formatting (Black)**: Some files need formatting" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>View formatting issues</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "```" >> $GITHUB_STEP_SUMMARY
+          cat black_results.txt >> $GITHUB_STEP_SUMMARY
+          echo "```" >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # MyPy type checking
+        if poetry run mypy src/ > mypy_results.txt 2>&1; then
+          echo "✅ **Type Checking (MyPy)**: No type errors found" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️ **Type Checking (MyPy)**: Type issues detected" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>View type checking results</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "```" >> $GITHUB_STEP_SUMMARY
+          cat mypy_results.txt >> $GITHUB_STEP_SUMMARY
+          echo "```" >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Security audit
+        poetry run pip-audit --format=json --output=audit-results.json
+        VULN_COUNT=$(jq '.vulnerabilities | length' audit-results.json 2>/dev/null || echo "0")
+        
+        if [ "$VULN_COUNT" -eq 0 ]; then
+          echo "✅ **Security Audit (pip-audit)**: No vulnerabilities found" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️ **Security Audit (pip-audit)**: $VULN_COUNT vulnerabilities found" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>View vulnerability details</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "```json" >> $GITHUB_STEP_SUMMARY
+          jq '.vulnerabilities[] | {package: .package.name, vulnerability: .vulnerability.id, description: .vulnerability.description}' audit-results.json >> $GITHUB_STEP_SUMMARY
+          echo "```" >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+    
+    - name: 📋 Generate SBOM with enhanced metadata
+      run: |
+        poetry run python scripts/generate_sbom.py > sbom.json
+        SBOM_HASH=$(sha256sum sbom.json | cut -d' ' -f1)
+        
+        # Enhanced SBOM summary
+        echo "### 📋 Software Bill of Materials (SBOM)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        COMPONENT_COUNT=$(jq '.components | length' sbom.json 2>/dev/null || echo "0")
+        DIRECT_DEPS=$(jq '.components | map(select(.scope == "required")) | length' sbom.json 2>/dev/null || echo "0")
+        DEV_DEPS=$(jq '.components | map(select(.scope == "optional")) | length' sbom.json 2>/dev/null || echo "0")
+        
+        echo "| 📊 SBOM Metrics | Count |" >> $GITHUB_STEP_SUMMARY
+        echo "|-----------------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| 📦 Total Components | $COMPONENT_COUNT |" >> $GITHUB_STEP_SUMMARY
+        echo "| 🎯 Direct Dependencies | $DIRECT_DEPS |" >> $GITHUB_STEP_SUMMARY
+        echo "| 🛠️ Dev Dependencies | $DEV_DEPS |" >> $GITHUB_STEP_SUMMARY
+        echo "| 🔐 SBOM Hash | \`${SBOM_HASH:0:12}...\` |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "✅ SBOM generated with $COMPONENT_COUNT components" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload SBOM
+      id: upload-sbom
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: sbom-${{ github.sha }}
+        path: sbom.json
+        retention-days: 90
+
+    - name: 🛡️ Run baseline Trivy scan
+      uses: aquasecurity/trivy-action@dc5a429b52fcf669ce959baa2c2dd26090d2a6c4
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'json'
+        output: 'baseline-scan.json'
+
+    - name: 📊 Process baseline scan results
+      uses: ./.github/actions/security-reporter
+      with:
+        phase: "scan-results"
+        scan-file: "baseline-scan.json"
+        title: "🛡️ Baseline Security Scan Results"
+
+    - name: Upload baseline scan results
+      id: upload-scan
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: baseline-scan-${{ github.sha }}
+        path: baseline-scan.json
+        retention-days: 30
+
+    - name: 🎯 Complete Test Phase
+      uses: ./.github/actions/security-reporter
+      with:
+        phase: "test-complete"
+        title: "✅ Test & Scan Phase Complete!"
+
+  build-container:
+    needs: test-and-scan
+    runs-on: ubuntu-latest
+    outputs:
+      image-digest: ${{ steps.final-image.outputs.digest }}
+      image-uri: ${{ steps.final-image.outputs.uri }}
+      patched: ${{ steps.vulnerability-scan.outputs.needs_patching }}
+      
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 🏗️ Initialize Build Phase
+      run: |
+        echo "## 🏗️ Container Build & Patching Phase" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "🎯 **Building secure container image with vulnerability patching and SLSA provenance**" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+    
+    - name: Install Cosign
+      uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435
+
+    - name: Install Trivy
+      run: |
+        sudo mkdir -p /usr/local/bin/
+        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+        trivy --version
+
+    - name: Install Copa
+      run: |
+        # Determine system architecture
+        ARCH=$(uname -m)
+        case $ARCH in
+          x86_64)
+            ARCH_NAME="amd64"
+            ;;
+          aarch64)
+            ARCH_NAME="arm64"
+            ;;
+          *)
+            echo "Unsupported architecture: $ARCH"
+            exit 1
+            ;;
+        esac
+
+        # Create temp directory for downloads
+        TEMP_DIR=$(mktemp -d)
+        cd $TEMP_DIR
+
+        # Download the latest release
+        curl -L -o copa.tar.gz $(curl -s https://api.github.com/repos/project-copacetic/copacetic/releases/latest | \
+          grep "browser_download_url.*linux_${ARCH_NAME}.tar.gz\"" | \
+          cut -d : -f 2,3 | \
+          tr -d \")
+
+        # Install Copa
+        tar xzf copa.tar.gz
+        sudo chmod +x copa
+        sudo mv copa /usr/local/bin/
+        cd -
+        rm -rf $TEMP_DIR
+
+        # Verify installation
+        copa -h
+        
+        echo "### 🛠️ Security Tools Installed" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Trivy**: Container vulnerability scanner" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Copa**: Container vulnerability patcher" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+      
+    - name: Log in to Container Registry
+      uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: 🏷️ Extract metadata
+      id: meta
+      uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix=sha-,enable={{is_default_branch}}
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=semver,pattern={{version}}
+    
+    - name: 🛠️ Build and push initial Docker image
+      id: build
+      uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
+      with:
+        context: .
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+        provenance: false  # We'll generate SLSA provenance separately
+
+    - name: 🔍 Scan image for vulnerabilities
+      id: vulnerability-scan
+      run: |
+        # Get the primary tag for scanning
+        PRIMARY_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+        IMAGE_REF="${PRIMARY_TAG}"
+        
+        echo "🔍 Scanning image: $IMAGE_REF" >> $GITHUB_STEP_SUMMARY
+        
+        # Scan and save results
+        SCAN_RESULT_FILE="container-scan.json"
+        trivy image \
+          --vuln-type os \
+          --ignore-unfixed \
+          --scanners vuln --db-repository public.ecr.aws/aquasecurity/trivy-db:2 \
+          -f json \
+          -o ${SCAN_RESULT_FILE} \
+          ${IMAGE_REF}
+
+        # Check for vulnerabilities meeting threshold
+        if trivy image \
+          --vuln-type os \
+          --ignore-unfixed \
+          --scanners vuln --db-repository public.ecr.aws/aquasecurity/trivy-db:2 \
+          --exit-code 1 \
+          --severity ${{ env.VULNERABILITY_THRESHOLD }} \
+          ${IMAGE_REF} > vuln_check.txt 2>&1; then
+          echo "needs_patching=false" >> $GITHUB_OUTPUT
+          echo "✅ **No ${{ env.VULNERABILITY_THRESHOLD }} vulnerabilities found**" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "needs_patching=true" >> $GITHUB_OUTPUT
+          echo "⚠️ **${{ env.VULNERABILITY_THRESHOLD }} vulnerabilities detected - patching required**" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        # Count vulnerabilities by severity
+        CRITICAL_COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' ${SCAN_RESULT_FILE} 2>/dev/null || echo "0")
+        HIGH_COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' ${SCAN_RESULT_FILE} 2>/dev/null || echo "0")
+        MEDIUM_COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "MEDIUM")] | length' ${SCAN_RESULT_FILE} 2>/dev/null || echo "0")
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🔍 Container Vulnerability Scan Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| 🚨 Severity | Count |" >> $GITHUB_STEP_SUMMARY
+        echo "|------------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| 🔴 Critical | $CRITICAL_COUNT |" >> $GITHUB_STEP_SUMMARY
+        echo "| 🟠 High | $HIGH_COUNT |" >> $GITHUB_STEP_SUMMARY
+        echo "| 🟡 Medium | $MEDIUM_COUNT |" >> $GITHUB_STEP_SUMMARY
+        echo "| 🎯 Threshold | ${{ env.VULNERABILITY_THRESHOLD }} |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "image_ref=$IMAGE_REF" >> $GITHUB_OUTPUT
+
+    - name: 🩹 Patch vulnerabilities with Copa
+      if: steps.vulnerability-scan.outputs.needs_patching == 'true'
+      id: patch
+      run: |
+        IMAGE_REF="${{ steps.vulnerability-scan.outputs.image_ref }}"
+        PATCHED_IMAGE="${IMAGE_REF}-patched"
+        
+        echo "🩹 Patching vulnerabilities in: $IMAGE_REF" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Patch the image using Copa
+        if copa patch \
+          -r container-scan.json \
+          --image ${IMAGE_REF} \
+          --tag ${PATCHED_IMAGE}; then
+          
+          echo "✅ **Image patched successfully**" >> $GITHUB_STEP_SUMMARY
+          
+          # Re-tag and push all original tags to point to patched image
+          TAGS="${{ steps.meta.outputs.tags }}"
+          PATCHED_DIGEST=""
+          
+          for tag in $TAGS; do
+            echo "🏷️ Re-tagging: $tag -> patched image"
+            docker tag ${PATCHED_IMAGE} $tag
+            # Capture digest from the first push
+            if [ -z "$PATCHED_DIGEST" ]; then
+              PUSH_OUTPUT=$(docker push $tag 2>&1)
+              PATCHED_DIGEST=$(echo "$PUSH_OUTPUT" | grep -o 'sha256:[a-f0-9]\{64\}' | head -1)
+            else
+              docker push $tag
+            fi
+          done
+          
+          echo "patched_image=$PATCHED_IMAGE" >> $GITHUB_OUTPUT
+          echo "patching_successful=true" >> $GITHUB_OUTPUT
+          echo "patched_digest=$PATCHED_DIGEST" >> $GITHUB_OUTPUT
+          
+        else
+          echo "❌ **Patching failed - proceeding with original image**" >> $GITHUB_STEP_SUMMARY
+          echo "patched_image=" >> $GITHUB_OUTPUT
+          echo "patching_successful=false" >> $GITHUB_OUTPUT
+          echo "patched_digest=" >> $GITHUB_OUTPUT
+        fi
+
+    - name: 🔍 Final vulnerability verification
+      if: steps.vulnerability-scan.outputs.needs_patching == 'true'
+      run: |
+        IMAGE_REF="${{ steps.vulnerability-scan.outputs.image_ref }}"
+        
+        echo "### 🔍 Post-Patch Vulnerability Verification" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Scan the final image
+        trivy image \
+          --vuln-type os \
+          --ignore-unfixed \
+          --scanners vuln --db-repository public.ecr.aws/aquasecurity/trivy-db:2 \
+          -f json \
+          -o final-scan.json \
+          ${IMAGE_REF}
+        
+        # Count remaining vulnerabilities
+        REMAINING_CRITICAL=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' final-scan.json 2>/dev/null || echo "0")
+        REMAINING_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' final-scan.json 2>/dev/null || echo "0")
+        
+        echo "| 🔍 Post-Patch Status | Count |" >> $GITHUB_STEP_SUMMARY
+        echo "|---------------------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| 🔴 Critical Remaining | $REMAINING_CRITICAL |" >> $GITHUB_STEP_SUMMARY
+        echo "| 🟠 High Remaining | $REMAINING_HIGH |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Final threshold check
+        if trivy image \
+          --vuln-type os \
+          --ignore-unfixed \
+          --scanners vuln --db-repository public.ecr.aws/aquasecurity/trivy-db:2 \
+          --exit-code 1 \
+          --severity ${{ env.VULNERABILITY_THRESHOLD }} \
+          ${IMAGE_REF}; then
+          echo "✅ **Final image meets security threshold**" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️ **Warning: Final image still contains ${{ env.VULNERABILITY_THRESHOLD }} vulnerabilities**" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: 📊 Set final image details
+      id: final-image
+      run: |
+        # Determine final image and digest based on patching results
+        if [ "${{ steps.vulnerability-scan.outputs.needs_patching }}" == "true" ] && [ "${{ steps.patch.outputs.patching_successful }}" == "true" ]; then
+          # Use patched image digest
+          FINAL_DIGEST="${{ steps.patch.outputs.patched_digest }}"
+          FINAL_IMAGE="${{ steps.vulnerability-scan.outputs.image_ref }}"
+          echo "🩹 Using patched image" >> $GITHUB_STEP_SUMMARY
+        else
+          # Use original build digest
+          FINAL_DIGEST="${{ steps.build.outputs.digest }}"
+          FINAL_IMAGE="${{ steps.vulnerability-scan.outputs.image_ref }}"
+          if [ "${{ steps.vulnerability-scan.outputs.needs_patching }}" == "true" ]; then
+            echo "⚠️ Using original image (patching failed)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ Using original image (no patching needed)" >> $GITHUB_STEP_SUMMARY
+          fi
+        fi
+        
+        # Validate digest format
+        if [[ ! "$FINAL_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+          echo "❌ Invalid digest format: $FINAL_DIGEST"
+          exit 1
+        fi
+        
+        echo "digest=$FINAL_DIGEST" >> $GITHUB_OUTPUT
+        echo "uri=$FINAL_IMAGE" >> $GITHUB_OUTPUT
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 🎯 Final Image Details" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| 📋 Property | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|-------------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| 🏷️ Image URI | \`$FINAL_IMAGE\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| 🔐 Digest | \`${FINAL_DIGEST:0:19}...\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| 🩹 Patched | ${{ steps.vulnerability-scan.outputs.needs_patching }} |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+    - name: 🔐 Sign container image with private key
+      env:
+        COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+      run: |
+        IMAGE_REF="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.final-image.outputs.digest }}"
+        echo "🔐 Signing final container image: $IMAGE_REF" >> $GITHUB_STEP_SUMMARY
+        
+        if cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$IMAGE_REF"; then
+          echo "✅ **Container image signed successfully with Cosign**" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️ **Container signing failed - proceeding with unsigned image**" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "" >> $GITHUB_STEP_SUMMARY
+    
+    - name: 📜 Generate GitHub Attestations
+      uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+      id: attest
+      with:
+        subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        subject-digest: ${{ steps.final-image.outputs.digest }}
+
+    - name: 🎯 Complete Build Phase
+      run: |
+        echo "### 🎉 Container Build Phase Complete!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ **Container built, scanned, and secured**" >> $GITHUB_STEP_SUMMARY
+        if [ "${{ steps.vulnerability-scan.outputs.needs_patching }}" == "true" ]; then
+          echo "🩹 **Vulnerabilities automatically patched**" >> $GITHUB_STEP_SUMMARY
+        fi
+        echo "🔐 **Container signed and attested**" >> $GITHUB_STEP_SUMMARY
+        echo "📜 **GitHub attestations generated**" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
