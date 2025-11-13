@@ -8,6 +8,16 @@ import traceback
 
 from .celery_app import celery_app
 from models import SessionLocal, PremiumAnalysisJob, JobStatus
+from .tasks_impl import (
+    update_job_status as _update_job_status,
+    setup_sandbox as _setup_sandbox,
+    start_container_with_profiling as _start_container_with_profiling,
+    execute_tests as _execute_tests,
+    collect_execution_profile as _collect_execution_profile,
+    analyze_reachability as _analyze_reachability,
+    generate_vex_document as _generate_vex_document,
+    cleanup_sandbox as _cleanup_sandbox,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,14 +109,14 @@ def run_premium_analysis(self, job_id: str, image_ref: str, image_digest: str, c
         # Phase 4: Collect execution profile
         logger.info(f"[{job_id}] Phase 4: Collecting execution profile")
         _update_job_status(db, job, JobStatus.ANALYZING, 70, "Analyzing execution")
-        execution_profile = _collect_execution_profile(sandbox_id)
+        execution_profile = _collect_execution_profile(sandbox_id, str(job.id))
         job.execution_profile = execution_profile
         db.commit()
 
         # Phase 5: Analyze reachability
         logger.info(f"[{job_id}] Phase 5: Analyzing reachability")
         _update_job_status(db, job, JobStatus.ANALYZING, 85, "Determining reachability")
-        reachability_results = _analyze_reachability(execution_profile, image_digest, config)
+        reachability_results = _analyze_reachability(execution_profile, image_digest, config, str(job.id))
         job.reachability_results = reachability_results
         db.commit()
 
@@ -153,145 +163,3 @@ def run_premium_analysis(self, job_id: str, image_ref: str, image_digest: str, c
 
     finally:
         # Always cleanup sandbox
-        if sandbox_id:
-            try:
-                logger.info(f"[{job_id}] Cleaning up sandbox {sandbox_id}")
-                _cleanup_sandbox(sandbox_id)
-            except Exception as cleanup_error:
-                logger.error(f"[{job_id}] Sandbox cleanup failed: {cleanup_error}")
-
-        db.close()
-
-
-# Helper functions (stubs to be implemented)
-
-def _update_job_status(db, job, status: JobStatus, progress: int, phase: str):
-    """Update job status in database"""
-    job.status = status
-    job.progress_percent = progress
-    job.current_phase = phase
-
-    if status == JobStatus.RUNNING and not job.started_at:
-        job.started_at = datetime.utcnow()
-    elif status in [JobStatus.COMPLETE, JobStatus.FAILED, JobStatus.CANCELLED]:
-        job.completed_at = datetime.utcnow()
-
-    db.commit()
-    logger.info(f"Job {job.id}: {status.value} - {progress}% - {phase}")
-
-
-def _setup_sandbox(job, image_ref: str, image_digest: str, config: dict) -> str:
-    """Setup isolated sandbox environment"""
-    logger.info(f"Setting up sandbox for {image_ref}@{image_digest}")
-
-    # TODO: Implement Kubernetes Job creation
-    # from services.sandbox import SandboxManager
-    # sandbox_manager = SandboxManager()
-    # sandbox_id = sandbox_manager.create_sandbox_job(image_ref, image_digest, config)
-
-    # For now, return mock ID
-    sandbox_id = f"sandbox-{job.id}"
-    logger.info(f"Created sandbox: {sandbox_id}")
-    return sandbox_id
-
-
-def _start_container_with_profiling(sandbox_id: str, config: dict):
-    """Start container with eBPF profiling attached"""
-    logger.info(f"Starting container in {sandbox_id} with profiling")
-    # TODO: Start K8s Job with Tracee sidecar
-    pass
-
-
-def _execute_tests(sandbox_id: str, config: dict):
-    """Execute tests and fuzzing"""
-    logger.info(f"Running tests in {sandbox_id}")
-
-    # Check if custom test script provided
-    if config.get("test_script"):
-        logger.info("Executing custom test script")
-        # TODO: Execute user-provided script
-
-    # Check if fuzzing enabled
-    if config.get("enable_fuzzing", True):
-        logger.info("Running OWASP ZAP fuzzing")
-        # TODO: Run ZAP fuzzer
-
-
-def _collect_execution_profile(sandbox_id: str) -> dict:
-    """Collect execution profile from profiler"""
-    logger.info(f"Collecting execution profile from {sandbox_id}")
-
-    # TODO: Parse Tracee output, get logs, etc.
-
-    # Mock execution profile
-    return {
-        "sandbox_id": sandbox_id,
-        "duration_seconds": 120,
-        "files_accessed": [
-            "/app/main.py",
-            "/app/lib/utils.py",
-            "/usr/lib/x86_64-linux-gnu/libc.so.6"
-        ],
-        "syscalls": ["read", "write", "socket", "connect", "open", "close"],
-        "network_connections": ["8.8.8.8:443"],
-        "loaded_libraries": ["libc.so.6", "libssl.so.1.1"],
-        "code_coverage_percent": 24.0
-    }
-
-
-def _analyze_reachability(execution_profile: dict, image_digest: str, config: dict) -> dict:
-    """Determine CVE reachability"""
-    logger.info("Analyzing reachability")
-
-    # TODO: Implement reachability logic
-    # 1. Get CVEs from SBOM
-    # 2. Map CVEs to files
-    # 3. Check if files were executed
-    # 4. Generate reachability results with confidence scores
-
-    # Mock results
-    return {
-        "cves_analyzed": 10,
-        "not_affected": 8,
-        "affected": 2,
-        "under_investigation": 0,
-        "results": [
-            {
-                "cve_id": "CVE-2024-12345",
-                "status": "not_affected",
-                "justification": "vulnerable_code_not_in_execute_path",
-                "confidence_score": 0.87,
-                "reason": "Vulnerable function libfoo_process() exists but was not executed",
-                "vulnerable_files": ["/usr/lib/libfoo.so.1"],
-                "executed_files": execution_profile.get("files_accessed", [])
-            }
-        ]
-    }
-
-
-def _generate_vex_document(reachability_results: dict, execution_profile: dict, job) -> dict:
-    """Generate OpenVEX document"""
-    logger.info("Generating VEX document")
-
-    # TODO: Generate proper OpenVEX document
-
-    return {
-        "@context": "https://openvex.dev/ns/v0.2.0",
-        "@id": f"https://vexxy.dev/vex/premium/{job.id}",
-        "author": "VEXxy Premium Analysis Service",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-        "version": 1,
-        "statements": []
-    }
-
-
-def _cleanup_sandbox(sandbox_id: str):
-    """Cleanup sandbox resources"""
-    logger.info(f"Cleaning up sandbox {sandbox_id}")
-
-    # TODO: Delete Kubernetes Job
-    # from services.sandbox import SandboxManager
-    # sandbox_manager = SandboxManager()
-    # sandbox_manager.delete_job(sandbox_id)
-
-    logger.info(f"Sandbox {sandbox_id} cleaned up")

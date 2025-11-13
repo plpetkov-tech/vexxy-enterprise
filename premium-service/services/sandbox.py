@@ -132,8 +132,39 @@ class SandboxManager:
             )
         )
 
-        # TODO: Add profiler sidecar (Tracee)
-        # profiler_container = client.V1Container(...)
+        # Tracee profiler sidecar (eBPF profiling)
+        # Only add if profiling is enabled
+        containers = [target_container, logger_container]
+
+        if job_config.get("enable_profiling", True):
+            profiler_container = client.V1Container(
+                name="profiler",
+                image="aquasec/tracee:latest",
+                command=[
+                    "tracee",
+                    "--output", "json",
+                    "--output", "option:parse-arguments",
+                    "--trace", "comm=target",  # Trace target container
+                    "--trace", "follow",  # Follow child processes
+                ],
+                security_context=client.V1SecurityContext(
+                    privileged=True,  # Required for eBPF
+                    capabilities=client.V1Capabilities(
+                        add=["SYS_ADMIN", "SYS_RESOURCE", "SYS_PTRACE"]
+                    )
+                ),
+                resources=client.V1ResourceRequirements(
+                    limits={"cpu": "500m", "memory": "512Mi"},
+                    requests={"cpu": "200m", "memory": "256Mi"}
+                ),
+                volume_mounts=[
+                    client.V1VolumeMount(
+                        name="shared-logs",
+                        mount_path="/tracee-output"
+                    )
+                ]
+            )
+            containers.append(profiler_container)
 
         # Job specification
         job = client.V1Job(
@@ -172,7 +203,13 @@ class SandboxManager:
                                 type="RuntimeDefault"
                             )
                         ),
-                        containers=[target_container, logger_container]
+                        containers=containers,  # Use dynamically built container list
+                        volumes=[
+                            client.V1Volume(
+                                name="shared-logs",
+                                empty_dir=client.V1EmptyDirVolumeSource()
+                            )
+                        ]
                     )
                 )
             )
