@@ -14,6 +14,13 @@ from typing import Optional, Dict, List, Tuple
 from datetime import datetime
 
 from config.settings import settings
+from exceptions import (
+    KubernetesError,
+    KubescapeError,
+    TimeoutError as VexxyTimeoutError,
+    InternalServiceError
+)
+from utils import retry_with_backoff, RetryConfig
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +40,9 @@ class KubescapeService:
 
         Args:
             namespace: Kubernetes namespace for analysis workloads
+
+        Raises:
+            KubernetesError: If Kubernetes configuration fails
         """
         self.namespace = namespace or settings.k8s_sandbox_namespace
 
@@ -45,22 +55,40 @@ class KubescapeService:
                 config.load_kube_config()
                 logger.info("Loaded local kubeconfig")
         except Exception as e:
-            logger.error(f"Failed to load Kubernetes config: {e}")
-            raise
+            logger.error(f"Failed to load Kubernetes config: {e}", exc_info=True)
+            raise KubernetesError(
+                operation="load_config",
+                error=str(e),
+                details={"in_cluster": settings.k8s_in_cluster}
+            )
 
-        self.apps_v1 = client.AppsV1Api()
-        self.core_v1 = client.CoreV1Api()
-        self.batch_v1 = client.BatchV1Api()
+        try:
+            self.apps_v1 = client.AppsV1Api()
+            self.core_v1 = client.CoreV1Api()
+            self.batch_v1 = client.BatchV1Api()
 
-        # Dynamic client for custom resources (Kubescape CRDs)
-        self.dynamic_client = DynamicClient(client.ApiClient())
+            # Dynamic client for custom resources (Kubescape CRDs)
+            self.dynamic_client = DynamicClient(client.ApiClient())
+        except Exception as e:
+            logger.error(f"Failed to initialize Kubernetes API clients: {e}", exc_info=True)
+            raise KubernetesError(
+                operation="initialize_clients",
+                error=str(e)
+            )
 
+    @retry_with_backoff(
+        exceptions=(ApiException,),
+        config=RetryConfig(max_attempts=3, initial_delay=1.0)
+    )
     def is_kubescape_installed(self) -> bool:
         """
         Check if Kubescape is installed in the cluster
 
         Returns:
             True if Kubescape is installed, False otherwise
+
+        Raises:
+            KubernetesError: If API call fails
         """
         try:
             # Check for Kubescape namespace
@@ -92,8 +120,18 @@ class KubescapeService:
             if e.status == 404:
                 logger.warning("Kubescape not found in cluster")
                 return False
-            logger.error(f"Error checking Kubescape installation: {e}")
-            return False
+            logger.error(f"Error checking Kubescape installation: {e}", exc_info=True)
+            raise KubernetesError(
+                operation="check_kubescape_installation",
+                error=str(e),
+                details={"status_code": e.status}
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error checking Kubescape installation: {e}", exc_info=True)
+            raise InternalServiceError(
+                message=f"Failed to check Kubescape installation: {str(e)}",
+                service="kubescape"
+            )
 
     def install_kubescape(self) -> bool:
         """
@@ -276,12 +314,44 @@ grypeOfflineDB:
                 namespace=self.namespace,
                 body=deployment
             )
-            logger.info(f"Created deployment {deployment_name} for Kubescape analysis")
+            logger.info(
+                f"Created deployment {deployment_name} for Kubescape analysis",
+                extra={
+                    "deployment_name": deployment_name,
+                    "job_id": job_id,
+                    "image_ref": image_ref,
+                    "namespace": self.namespace
+                }
+            )
             return deployment_name
 
         except ApiException as e:
-            logger.error(f"Failed to create deployment: {e}")
-            raise RuntimeError(f"Failed to create deployment: {e}")
+            logger.error(
+                f"Failed to create deployment: {e}",
+                extra={
+                    "deployment_name": deployment_name,
+                    "job_id": job_id,
+                    "namespace": self.namespace,
+                    "status_code": e.status
+                },
+                exc_info=True
+            )
+            raise KubernetesError(
+                operation="create_deployment",
+                error=str(e),
+                details={
+                    "deployment_name": deployment_name,
+                    "namespace": self.namespace,
+                    "status_code": e.status
+                }
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error creating deployment: {e}", exc_info=True)
+            raise InternalServiceError(
+                message=f"Failed to create deployment: {str(e)}",
+                service="kubernetes",
+                details={"deployment_name": deployment_name}
+            )
 
     def wait_for_kubescape_analysis(
         self,
@@ -505,6 +575,9 @@ grypeOfflineDB:
 
         Args:
             deployment_name: Name of deployment to delete
+
+        Raises:
+            KubernetesError: If deletion fails (except for 404)
         """
         try:
             self.apps_v1.delete_namespaced_deployment(
@@ -512,15 +585,55 @@ grypeOfflineDB:
                 namespace=self.namespace,
                 propagation_policy="Foreground"
             )
-            logger.info(f"Deleted deployment {deployment_name}")
+            logger.info(
+                f"Deleted deployment {deployment_name}",
+                extra={
+                    "deployment_name": deployment_name,
+                    "namespace": self.namespace
+                }
+            )
 
         except ApiException as e:
             if e.status == 404:
-                logger.warning(f"Deployment {deployment_name} not found (already deleted?)")
+                logger.warning(
+                    f"Deployment {deployment_name} not found (already deleted?)",
+                    extra={"deployment_name": deployment_name, "namespace": self.namespace}
+                )
             else:
-                logger.error(f"Failed to delete deployment: {e}")
-                raise RuntimeError(f"Failed to delete deployment: {e}")
+                logger.error(
+                    f"Failed to delete deployment: {e}",
+                    extra={
+                        "deployment_name": deployment_name,
+                        "namespace": self.namespace,
+                        "status_code": e.status
+                    },
+                    exc_info=True
+                )
+                raise KubernetesError(
+                    operation="delete_deployment",
+                    error=str(e),
+                    details={
+                        "deployment_name": deployment_name,
+                        "namespace": self.namespace,
+                        "status_code": e.status
+                    }
+                )
+        except Exception as e:
+            logger.error(
+                f"Unexpected error deleting deployment: {e}",
+                extra={"deployment_name": deployment_name},
+                exc_info=True
+            )
+            raise InternalServiceError(
+                message=f"Failed to delete deployment: {str(e)}",
+                service="kubernetes",
+                details={"deployment_name": deployment_name}
+            )
 
+    @retry_with_backoff(
+        exceptions=(ApiException,),
+        config=RetryConfig(max_attempts=3, initial_delay=1.0)
+    )
     def get_deployment_status(self, deployment_name: str) -> Dict:
         """
         Get status of analysis deployment
@@ -530,6 +643,9 @@ grypeOfflineDB:
 
         Returns:
             dict with deployment status
+
+        Raises:
+            KubernetesError: If status check fails (except for 404)
         """
         try:
             deployment = self.apps_v1.read_namespaced_deployment(
@@ -537,7 +653,7 @@ grypeOfflineDB:
                 namespace=self.namespace
             )
 
-            return {
+            status_info = {
                 "deployment_name": deployment_name,
                 "replicas": deployment.status.replicas or 0,
                 "ready_replicas": deployment.status.ready_replicas or 0,
@@ -545,8 +661,48 @@ grypeOfflineDB:
                 "status": "ready" if deployment.status.ready_replicas else "not_ready"
             }
 
+            logger.debug(
+                f"Deployment {deployment_name} status: {status_info['status']}",
+                extra={
+                    "deployment_name": deployment_name,
+                    "status": status_info
+                }
+            )
+
+            return status_info
+
         except ApiException as e:
             if e.status == 404:
+                logger.warning(
+                    f"Deployment {deployment_name} not found",
+                    extra={"deployment_name": deployment_name}
+                )
                 return {"deployment_name": deployment_name, "status": "not_found"}
-            logger.error(f"Failed to get deployment status: {e}")
-            raise RuntimeError(f"Failed to get deployment status: {e}")
+
+            logger.error(
+                f"Failed to get deployment status: {e}",
+                extra={
+                    "deployment_name": deployment_name,
+                    "status_code": e.status
+                },
+                exc_info=True
+            )
+            raise KubernetesError(
+                operation="get_deployment_status",
+                error=str(e),
+                details={
+                    "deployment_name": deployment_name,
+                    "status_code": e.status
+                }
+            )
+        except Exception as e:
+            logger.error(
+                f"Unexpected error getting deployment status: {e}",
+                extra={"deployment_name": deployment_name},
+                exc_info=True
+            )
+            raise InternalServiceError(
+                message=f"Failed to get deployment status: {str(e)}",
+                service="kubernetes",
+                details={"deployment_name": deployment_name}
+            )

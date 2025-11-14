@@ -1,9 +1,11 @@
 """
 Main FastAPI application for Premium VEX Service
 """
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from datetime import datetime
 from uuid import UUID
 import logging
@@ -18,12 +20,28 @@ from .schemas import (
     HealthResponse,
     JobStatusEnum
 )
-
-# Configure logging
-logging.basicConfig(
-    level=settings.log_level,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+from exceptions import (
+    JobNotFoundError,
+    InvalidJobStateError,
+    DatabaseError,
+    InternalServiceError
 )
+from middleware import (
+    error_handler_middleware,
+    correlation_id_middleware,
+    logging_middleware
+)
+from middleware.logging_middleware import configure_json_logging
+
+# Configure structured logging if enabled
+if settings.environment == "production":
+    configure_json_logging(log_level=settings.log_level)
+else:
+    logging.basicConfig(
+        level=settings.log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+
 logger = logging.getLogger(__name__)
 
 # Create FastAPI app
@@ -35,7 +53,17 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# CORS middleware
+# Add custom middleware (order matters - applied in reverse)
+# 1. Error handlers (should be last to catch all errors)
+error_handler_middleware(app)
+
+# 2. Logging middleware
+logging_middleware(app)
+
+# 3. Correlation ID middleware (should be early to set correlation ID)
+correlation_id_middleware(app)
+
+# 4. CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # TODO: Configure for production
@@ -49,16 +77,33 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     """Initialize on startup"""
-    logger.info(f"Starting {settings.service_name} v{settings.version}")
-    logger.info(f"Environment: {settings.environment}")
+    logger.info(
+        f"Starting {settings.service_name} v{settings.version}",
+        extra={
+            "event": "startup",
+            "service": settings.service_name,
+            "version": settings.version,
+            "environment": settings.environment
+        }
+    )
 
-    # Initialize database
+    # Initialize database with proper error handling
     from models.database import init_db
     try:
         init_db()
-        logger.info("Database initialized successfully")
+        logger.info("Database initialized successfully", extra={"event": "database_init_success"})
     except Exception as e:
-        logger.error(f"Database initialization failed: {e}")
+        logger.error(
+            f"Database initialization failed: {e}",
+            extra={
+                "event": "database_init_failed",
+                "error": str(e),
+                "error_type": type(e).__name__
+            },
+            exc_info=True
+        )
+        # Don't exit - allow app to start but health check will fail
+        # This enables graceful degradation and better visibility
 
 
 # Shutdown event
@@ -68,20 +113,103 @@ async def shutdown_event():
     logger.info(f"Shutting down {settings.service_name}")
 
 
-# Health check
-@app.get("/health", response_model=HealthResponse, tags=["Health"])
-async def health_check():
+# Health check with dependency verification
+@app.get("/health", tags=["Health"])
+async def health_check(request: Request, db: Session = Depends(get_db)):
     """
-    Health check endpoint
+    Enhanced health check endpoint
 
-    Returns service status and version information.
+    Checks:
+    - Service is running
+    - Database connectivity
+    - Redis connectivity (for Celery)
+
+    Returns:
+    - 200: All systems healthy
+    - 503: One or more dependencies unhealthy
     """
-    return HealthResponse(
-        status="healthy",
-        service=settings.service_name,
-        version=settings.version,
-        timestamp=datetime.utcnow()
-    )
+    correlation_id = getattr(request.state, "correlation_id", None)
+    health_status = {
+        "status": "healthy",
+        "service": settings.service_name,
+        "version": settings.version,
+        "timestamp": datetime.utcnow().isoformat(),
+        "checks": {}
+    }
+
+    if correlation_id:
+        health_status["request_id"] = correlation_id
+
+    overall_healthy = True
+
+    # Check database
+    try:
+        db.execute(text("SELECT 1"))
+        health_status["checks"]["database"] = {
+            "status": "healthy",
+            "message": "Database connection OK"
+        }
+        logger.debug("Health check: database OK", extra={"correlation_id": correlation_id})
+    except Exception as e:
+        overall_healthy = False
+        health_status["checks"]["database"] = {
+            "status": "unhealthy",
+            "message": f"Database connection failed: {str(e)}"
+        }
+        logger.error(
+            f"Health check: database failed: {e}",
+            extra={"correlation_id": correlation_id, "error": str(e)},
+            exc_info=True
+        )
+
+    # Check Redis/Celery
+    try:
+        from workers.celery_app import celery_app
+        celery_inspect = celery_app.control.inspect()
+
+        # Quick ping with timeout
+        stats = celery_inspect.stats()
+        if stats:
+            health_status["checks"]["celery"] = {
+                "status": "healthy",
+                "message": "Celery workers available",
+                "workers": len(stats)
+            }
+            logger.debug(
+                f"Health check: Celery OK ({len(stats)} workers)",
+                extra={"correlation_id": correlation_id, "worker_count": len(stats)}
+            )
+        else:
+            overall_healthy = False
+            health_status["checks"]["celery"] = {
+                "status": "unhealthy",
+                "message": "No Celery workers available"
+            }
+            logger.warning(
+                "Health check: No Celery workers available",
+                extra={"correlation_id": correlation_id}
+            )
+    except Exception as e:
+        overall_healthy = False
+        health_status["checks"]["celery"] = {
+            "status": "unhealthy",
+            "message": f"Celery check failed: {str(e)}"
+        }
+        logger.error(
+            f"Health check: Celery failed: {e}",
+            extra={"correlation_id": correlation_id, "error": str(e)},
+            exc_info=True
+        )
+
+    # Set overall status
+    if not overall_healthy:
+        health_status["status"] = "degraded"
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=health_status
+        )
+
+    return health_status
 
 
 # Analysis endpoints
@@ -173,6 +301,7 @@ async def submit_analysis(
 )
 async def get_analysis_status(
     job_id: UUID,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """
@@ -180,29 +309,40 @@ async def get_analysis_status(
 
     Returns current status, progress, and phase information.
     """
-    logger.info(f"Status check for job {job_id}")
-
-    # Query database
-    job = db.query(PremiumAnalysisJob).filter(
-        PremiumAnalysisJob.id == job_id
-    ).first()
-
-    if not job:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Analysis job {job_id} not found"
-        )
-
-    return AnalysisStatusResponse(
-        job_id=job.id,
-        status=JobStatusEnum(job.status.value),
-        progress_percent=job.progress_percent or 0,
-        current_phase=job.current_phase,
-        started_at=job.started_at,
-        completed_at=job.completed_at,
-        error_message=job.error_message,
-        sandbox_id=job.sandbox_id
+    correlation_id = getattr(request.state, "correlation_id", None)
+    logger.info(
+        f"Status check for job {job_id}",
+        extra={"correlation_id": correlation_id, "job_id": str(job_id)}
     )
+
+    try:
+        # Query database
+        job = db.query(PremiumAnalysisJob).filter(
+            PremiumAnalysisJob.id == job_id
+        ).first()
+
+        if not job:
+            raise JobNotFoundError(job_id=str(job_id))
+
+        return AnalysisStatusResponse(
+            job_id=job.id,
+            status=JobStatusEnum(job.status.value),
+            progress_percent=job.progress_percent or 0,
+            current_phase=job.current_phase,
+            started_at=job.started_at,
+            completed_at=job.completed_at,
+            error_message=job.error_message,
+            sandbox_id=job.sandbox_id
+        )
+    except JobNotFoundError:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Failed to get status for job {job_id}: {e}",
+            extra={"correlation_id": correlation_id, "job_id": str(job_id), "error": str(e)},
+            exc_info=True
+        )
+        raise DatabaseError(operation="query job status", error=str(e))
 
 
 @app.get(
@@ -212,6 +352,7 @@ async def get_analysis_status(
 )
 async def get_analysis_results(
     job_id: UUID,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """
@@ -219,36 +360,48 @@ async def get_analysis_results(
 
     Returns execution profile, reachability analysis, and generated VEX document.
     """
-    logger.info(f"Results request for job {job_id}")
-
-    # Query database
-    job = db.query(PremiumAnalysisJob).filter(
-        PremiumAnalysisJob.id == job_id
-    ).first()
-
-    if not job:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Analysis job {job_id} not found"
-        )
-
-    if job.status != JobStatus.COMPLETE:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Analysis job {job_id} is not complete (status: {job.status.value})"
-        )
-
-    return AnalysisResults(
-        job_id=job.id,
-        status=JobStatusEnum(job.status.value),
-        image_ref=job.image_ref,
-        image_digest=job.image_digest,
-        execution_profile=job.execution_profile,
-        reachability_results=job.reachability_results or [],
-        generated_vex_id=job.generated_vex_id,
-        created_at=job.created_at,
-        completed_at=job.completed_at
+    correlation_id = getattr(request.state, "correlation_id", None)
+    logger.info(
+        f"Results request for job {job_id}",
+        extra={"correlation_id": correlation_id, "job_id": str(job_id)}
     )
+
+    try:
+        # Query database
+        job = db.query(PremiumAnalysisJob).filter(
+            PremiumAnalysisJob.id == job_id
+        ).first()
+
+        if not job:
+            raise JobNotFoundError(job_id=str(job_id))
+
+        if job.status != JobStatus.COMPLETE:
+            raise InvalidJobStateError(
+                job_id=str(job_id),
+                current_state=job.status.value,
+                required_state="COMPLETE"
+            )
+
+        return AnalysisResults(
+            job_id=job.id,
+            status=JobStatusEnum(job.status.value),
+            image_ref=job.image_ref,
+            image_digest=job.image_digest,
+            execution_profile=job.execution_profile,
+            reachability_results=job.reachability_results or [],
+            generated_vex_id=job.generated_vex_id,
+            created_at=job.created_at,
+            completed_at=job.completed_at
+        )
+    except (JobNotFoundError, InvalidJobStateError):
+        raise
+    except Exception as e:
+        logger.error(
+            f"Failed to get results for job {job_id}: {e}",
+            extra={"correlation_id": correlation_id, "job_id": str(job_id), "error": str(e)},
+            exc_info=True
+        )
+        raise DatabaseError(operation="query job results", error=str(e))
 
 
 @app.delete(
@@ -257,6 +410,7 @@ async def get_analysis_results(
 )
 async def cancel_analysis(
     job_id: UUID,
+    request: Request,
     db: Session = Depends(get_db)
 ):
     """
@@ -264,39 +418,54 @@ async def cancel_analysis(
 
     Stops the analysis and cleans up resources.
     """
-    logger.info(f"Cancel request for job {job_id}")
+    correlation_id = getattr(request.state, "correlation_id", None)
+    logger.info(
+        f"Cancel request for job {job_id}",
+        extra={"correlation_id": correlation_id, "job_id": str(job_id)}
+    )
 
-    # Query database
-    job = db.query(PremiumAnalysisJob).filter(
-        PremiumAnalysisJob.id == job_id
-    ).first()
+    try:
+        # Query database
+        job = db.query(PremiumAnalysisJob).filter(
+            PremiumAnalysisJob.id == job_id
+        ).first()
 
-    if not job:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Analysis job {job_id} not found"
+        if not job:
+            raise JobNotFoundError(job_id=str(job_id))
+
+        if job.status in [JobStatus.COMPLETE, JobStatus.FAILED, JobStatus.CANCELLED]:
+            raise InvalidJobStateError(
+                job_id=str(job_id),
+                current_state=job.status.value,
+                required_state="QUEUED, RUNNING, or ANALYZING"
+            )
+
+        # Update status
+        job.status = JobStatus.CANCELLED
+        job.completed_at = datetime.utcnow()
+        db.commit()
+
+        # TODO: Cancel Celery task and cleanup sandbox
+
+        logger.info(
+            f"Cancelled analysis job {job_id}",
+            extra={"correlation_id": correlation_id, "job_id": str(job_id)}
         )
 
-    if job.status in [JobStatus.COMPLETE, JobStatus.FAILED, JobStatus.CANCELLED]:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot cancel job in status: {job.status.value}"
+        return {
+            "status": "cancelled",
+            "job_id": str(job_id),
+            "message": "Analysis job cancelled successfully"
+        }
+    except (JobNotFoundError, InvalidJobStateError):
+        raise
+    except Exception as e:
+        logger.error(
+            f"Failed to cancel job {job_id}: {e}",
+            extra={"correlation_id": correlation_id, "job_id": str(job_id), "error": str(e)},
+            exc_info=True
         )
-
-    # Update status
-    job.status = JobStatus.CANCELLED
-    job.completed_at = datetime.utcnow()
-    db.commit()
-
-    # TODO: Cancel Celery task and cleanup sandbox
-
-    logger.info(f"Cancelled analysis job {job_id}")
-
-    return {
-        "status": "cancelled",
-        "job_id": job_id,
-        "message": "Analysis job cancelled successfully"
-    }
+        raise DatabaseError(operation="cancel job", error=str(e))
 
 
 @app.get(
