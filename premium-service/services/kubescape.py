@@ -66,6 +66,7 @@ class KubescapeService:
             self.apps_v1 = client.AppsV1Api()
             self.core_v1 = client.CoreV1Api()
             self.batch_v1 = client.BatchV1Api()
+            self.custom_objects_api = client.CustomObjectsApi()
 
             # Dynamic client for custom resources (Kubescape CRDs)
             self.dynamic_client = DynamicClient(client.ApiClient())
@@ -408,7 +409,7 @@ grypeOfflineDB:
     def _check_vex_exists(self, pattern: str) -> bool:
         """Check if VEX CRD exists"""
         try:
-            result = self.core_v1.list_namespaced_custom_object(
+            result = self.custom_objects_api.list_namespaced_custom_object(
                 group="spdx.softwarecomposition.kubescape.io",
                 version="v1beta1",
                 namespace="kubescape",
@@ -430,7 +431,7 @@ grypeOfflineDB:
     def _check_filtered_sbom_exists(self, pattern: str) -> bool:
         """Check if filtered SBOM CRD exists"""
         try:
-            result = self.core_v1.list_namespaced_custom_object(
+            result = self.custom_objects_api.list_namespaced_custom_object(
                 group="spdx.softwarecomposition.kubescape.io",
                 version="v1beta1",
                 namespace="kubescape",
@@ -477,7 +478,7 @@ grypeOfflineDB:
 
         try:
             # Get all VEX documents in kubescape namespace
-            result = self.core_v1.list_namespaced_custom_object(
+            result = self.custom_objects_api.list_namespaced_custom_object(
                 group="spdx.softwarecomposition.kubescape.io",
                 version="v1beta1",
                 namespace="kubescape",
@@ -522,7 +523,7 @@ grypeOfflineDB:
 
         try:
             # Get all filtered SBOMs in kubescape namespace
-            result = self.core_v1.list_namespaced_custom_object(
+            result = self.custom_objects_api.list_namespaced_custom_object(
                 group="spdx.softwarecomposition.kubescape.io",
                 version="v1beta1",
                 namespace="kubescape",
