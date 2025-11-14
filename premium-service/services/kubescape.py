@@ -146,18 +146,40 @@ class KubescapeService:
         logger.info("Installing Kubescape via Helm...")
 
         try:
+            # Check if Helm is installed
+            try:
+                helm_version = subprocess.run(
+                    ["helm", "version", "--short"],
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+                logger.info(f"Helm version: {helm_version.stdout.strip()}")
+            except FileNotFoundError:
+                logger.error("Helm is not installed in the container")
+                return False
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Failed to get Helm version: {e.stderr}")
+                return False
+
             # Add Kubescape Helm repo
-            subprocess.run(
+            logger.info("Adding Kubescape Helm repository...")
+            result = subprocess.run(
                 ["helm", "repo", "add", "kubescape", "https://kubescape.github.io/helm-charts"],
                 check=True,
-                capture_output=True
+                capture_output=True,
+                text=True
             )
+            logger.info(f"Helm repo add output: {result.stdout}")
 
-            subprocess.run(
+            logger.info("Updating Helm repositories...")
+            result = subprocess.run(
                 ["helm", "repo", "update"],
                 check=True,
-                capture_output=True
+                capture_output=True,
+                text=True
             )
+            logger.info(f"Helm repo update output: {result.stdout}")
 
             # Install Kubescape with VEX and filtered SBOM enabled
             helm_values = """
@@ -185,6 +207,7 @@ grypeOfflineDB:
                 values_file = f.name
 
             # Install Kubescape
+            logger.info("Installing Kubescape operator (this may take a few minutes)...")
             result = subprocess.run(
                 [
                     "helm", "install", "kubescape", "kubescape/kubescape-operator",
@@ -202,15 +225,27 @@ grypeOfflineDB:
             logger.info(f"Kubescape installed successfully: {result.stdout}")
 
             # Wait for Kubescape pods to be ready
+            logger.info("Waiting for Kubescape pods to be ready...")
             time.sleep(30)
 
+            logger.info("Kubescape installation complete")
             return True
 
         except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to install Kubescape: {e.stderr}")
+            logger.error(
+                f"Failed to install Kubescape via Helm",
+                extra={
+                    "command": " ".join(e.cmd),
+                    "return_code": e.returncode,
+                    "stdout": e.stdout,
+                    "stderr": e.stderr
+                }
+            )
+            logger.error(f"STDOUT: {e.stdout}")
+            logger.error(f"STDERR: {e.stderr}")
             return False
         except Exception as e:
-            logger.error(f"Error installing Kubescape: {e}", exc_info=True)
+            logger.error(f"Unexpected error installing Kubescape: {e}", exc_info=True)
             return False
 
     def deploy_workload_for_analysis(
