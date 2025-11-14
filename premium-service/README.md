@@ -328,30 +328,81 @@ All configuration is done via environment variables (see `.env.example`).
 
 ## Kubernetes Setup
 
-The service requires a Kubernetes cluster for sandbox execution.
+The service requires a Kubernetes cluster for sandbox execution (e.g., kind, minikube, GKE, EKS).
 
-### 1. Create Namespace
+### Option 1: Automatic Setup (Recommended)
+
+The namespace will be **automatically created** on first use! Just ensure:
+
+1. Your cluster is accessible via `kubectl`
+2. Your kubeconfig is mounted in docker-compose (already configured)
+3. Start the services: `docker-compose up`
+
+The KubescapeService will automatically create the `vexxy-sandbox` namespace when it initializes.
+
+### Option 2: Manual Setup
+
+If you prefer to set up the cluster manually:
+
+```bash
+# Run the initialization script
+./scripts/init-cluster.sh
+```
+
+This script will:
+- ✅ Create the `vexxy-sandbox` namespace
+- ✅ Label it appropriately
+- ✅ Check for Kubescape installation (auto-installed on first analysis if missing)
+
+Or create the namespace manually:
 
 ```bash
 kubectl create namespace vexxy-sandbox
+kubectl label namespace vexxy-sandbox app=vexxy vexxy.dev/premium=true
 ```
 
-### 2. Set Up RBAC (TODO)
+### Testing with a Local Kubernetes Cluster
+
+**Using kind:**
+```bash
+# Create a kind cluster
+kind create cluster --name vexxy-test
+
+# Verify connection
+kubectl cluster-info
+
+# Start vexxy services (namespace auto-created)
+docker-compose up
+```
+
+**Using minikube:**
+```bash
+# Start minikube
+minikube start
+
+# Verify connection
+kubectl cluster-info
+
+# Start vexxy services (namespace auto-created)
+docker-compose up
+```
+
+### Configure Access
+
+**Local development (docker-compose):**
+- Kubeconfig is auto-mounted from `~/.kube/config` (see docker-compose.yml line 81)
+- Set `K8S_IN_CLUSTER=false` in `.env`
+
+**Production (in-cluster):**
+- Use Kubernetes service account
+- Set `K8S_IN_CLUSTER=true`
+
+### Set Up RBAC (TODO)
 
 ```bash
 # Create service account and role binding
 kubectl apply -f k8s/rbac.yaml
 ```
-
-### 3. Configure Access
-
-**Local development:**
-- Use `~/.kube/config`
-- Set `K8S_IN_CLUSTER=false`
-
-**Production (in-cluster):**
-- Use service account
-- Set `K8S_IN_CLUSTER=true`
 
 ---
 
@@ -406,6 +457,17 @@ docker-compose restart worker
 
 ### Kubernetes Job Failures
 
+**Namespace not found error:**
+```
+"message":"namespaces \"vexxy-sandbox\" not found","reason":"NotFound","code":404}
+```
+
+This should not happen anymore (v0.2.0+) as the namespace is auto-created. If you see this error:
+1. Check that your kubeconfig is valid: `kubectl cluster-info`
+2. Restart the worker to trigger namespace creation: `docker-compose restart worker`
+3. Or manually create it: `kubectl create namespace vexxy-sandbox`
+
+**General job troubleshooting:**
 ```bash
 # List sandbox jobs
 kubectl get jobs -n vexxy-sandbox
@@ -418,6 +480,12 @@ kubectl describe job -n vexxy-sandbox vex-analysis-abc123
 
 # Clean up failed jobs
 kubectl delete jobs -n vexxy-sandbox --field-selector status.successful=0
+
+# Check if namespace exists
+kubectl get namespace vexxy-sandbox
+
+# View namespace events
+kubectl get events -n vexxy-sandbox
 ```
 
 ---

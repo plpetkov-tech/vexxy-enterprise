@@ -70,11 +70,68 @@ class KubescapeService:
 
             # Dynamic client for custom resources (Kubescape CRDs)
             self.dynamic_client = DynamicClient(client.ApiClient())
+
+            # Ensure the sandbox namespace exists
+            self._ensure_namespace_exists()
         except Exception as e:
             logger.error(f"Failed to initialize Kubernetes API clients: {e}", exc_info=True)
             raise KubernetesError(
                 operation="initialize_clients",
                 error=str(e)
+            )
+
+    def _ensure_namespace_exists(self):
+        """
+        Ensure the sandbox namespace exists, create it if it doesn't
+
+        Raises:
+            KubernetesError: If namespace creation fails (except for already exists)
+        """
+        try:
+            # Try to read the namespace
+            self.core_v1.read_namespace(self.namespace)
+            logger.info(f"Namespace {self.namespace} already exists")
+        except ApiException as e:
+            if e.status == 404:
+                # Namespace doesn't exist, create it
+                logger.info(f"Creating namespace {self.namespace}")
+                try:
+                    namespace_body = client.V1Namespace(
+                        metadata=client.V1ObjectMeta(
+                            name=self.namespace,
+                            labels={
+                                "app": "vexxy",
+                                "vexxy.dev/premium": "true",
+                                "vexxy.dev/component": "sandbox"
+                            }
+                        )
+                    )
+                    self.core_v1.create_namespace(body=namespace_body)
+                    logger.info(f"Successfully created namespace {self.namespace}")
+                except ApiException as create_error:
+                    if create_error.status == 409:
+                        # Namespace was created by another process (race condition)
+                        logger.info(f"Namespace {self.namespace} already exists (created concurrently)")
+                    else:
+                        logger.error(f"Failed to create namespace {self.namespace}: {create_error}")
+                        raise KubernetesError(
+                            operation="create_namespace",
+                            error=str(create_error),
+                            details={"namespace": self.namespace, "status_code": create_error.status}
+                        )
+            else:
+                # Other error checking namespace
+                logger.error(f"Failed to check namespace {self.namespace}: {e}")
+                raise KubernetesError(
+                    operation="check_namespace",
+                    error=str(e),
+                    details={"namespace": self.namespace, "status_code": e.status}
+                )
+        except Exception as e:
+            logger.error(f"Unexpected error ensuring namespace exists: {e}", exc_info=True)
+            raise InternalServiceError(
+                message=f"Failed to ensure namespace {self.namespace} exists: {str(e)}",
+                service="kubernetes"
             )
 
     @retry_with_backoff(
