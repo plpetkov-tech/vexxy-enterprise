@@ -57,6 +57,7 @@ class PremiumAnalysisJob(Base):
     # Results
     execution_profile = Column(JSON)
     reachability_results = Column(JSON)
+    security_findings = Column(JSON, nullable=True)  # OWASP ZAP and other security scan results
     generated_vex_id = Column(UUID(as_uuid=True), nullable=True)
 
     # Sandbox tracking

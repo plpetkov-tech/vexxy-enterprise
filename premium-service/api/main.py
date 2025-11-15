@@ -492,6 +492,7 @@ async def get_analysis_results(
             image_digest=job.image_digest,
             execution_profile=job.execution_profile,
             reachability_results=job.reachability_results or [],
+            security_findings=job.security_findings,
             generated_vex_id=job.generated_vex_id,
             created_at=job.created_at,
             completed_at=job.completed_at
