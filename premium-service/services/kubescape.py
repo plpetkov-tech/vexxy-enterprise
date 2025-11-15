@@ -651,13 +651,16 @@ grypeOfflineDB:
             )
 
             # Find VEX matching our deployment
+            # VEX CRD names follow pattern: replicaset-{deployment_name}-{hash}-{container}-{hash}
+            # Example: replicaset-vex-analysis-e8e35769-5bcc849bcb-target-2bdc-4cf6
             digest_short = image_digest.replace("sha256:", "")[:12]
 
             for item in result.get('items', []):
                 name = item['metadata']['name']
 
-                # Check if VEX matches our image by digest
-                if digest_short in name or deployment_name[:8] in name:
+                # Match by deployment name (more precise than first 8 chars)
+                # or by image digest for image-based matching
+                if deployment_name in name or digest_short in name:
                     vex_spec = item.get('spec', {})
                     logger.info(f"Found runtime VEX: {name}")
 
@@ -696,13 +699,15 @@ grypeOfflineDB:
             )
 
             # Find SBOM matching our deployment
+            # Filtered SBOM CRD names may follow similar pattern to VEX
             digest_short = image_digest.replace("sha256:", "")[:12]
 
             for item in result.get('items', []):
                 name = item['metadata']['name']
 
-                # Check if SBOM matches our image
-                if digest_short in name or deployment_name[:8] in name:
+                # Match by deployment name (more precise than first 8 chars)
+                # or by image digest for image-based matching
+                if deployment_name in name or digest_short in name:
                     sbom_spec = item.get('spec', {})
                     logger.info(f"Found filtered SBOM: {name}")
 
