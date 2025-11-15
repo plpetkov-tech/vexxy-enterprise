@@ -105,6 +105,35 @@ async def startup_event():
         # Don't exit - allow app to start but health check will fail
         # This enables graceful degradation and better visibility
 
+    # Install Kubescape on startup (one-time setup)
+    try:
+        from services import KubescapeService
+        logger.info("Checking Kubescape installation...", extra={"event": "kubescape_init_start"})
+
+        kubescape_service = KubescapeService()
+        if kubescape_service.is_kubescape_installed():
+            logger.info("Kubescape is already installed", extra={"event": "kubescape_already_installed"})
+        else:
+            logger.info("Kubescape not found, installing...", extra={"event": "kubescape_installing"})
+            success = kubescape_service.install_kubescape()
+
+            if success:
+                logger.info("Kubescape installed successfully", extra={"event": "kubescape_install_success"})
+            else:
+                logger.error("Kubescape installation failed", extra={"event": "kubescape_install_failed"})
+                # Don't exit - allow app to start but analysis tasks will fail
+    except Exception as e:
+        logger.error(
+            f"Kubescape initialization failed: {e}",
+            extra={
+                "event": "kubescape_init_failed",
+                "error": str(e),
+                "error_type": type(e).__name__
+            },
+            exc_info=True
+        )
+        # Don't exit - allow app to start but analysis tasks will fail
+
 
 # Shutdown event
 @app.on_event("shutdown")
