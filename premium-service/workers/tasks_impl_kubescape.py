@@ -203,11 +203,12 @@ def run_owasp_zap_scan(
         from config.settings import settings
 
         # Initialize ZAP service
-        # ZAP should be running as a separate service in the cluster or accessible
+        # ZAP is deployed in the 'security' namespace by default
+        zap_namespace = getattr(settings, 'zap_namespace', 'security')
         zap_service = ZAPService(
-            zap_host=getattr(settings, 'zap_host', 'localhost'),
+            zap_host=getattr(settings, 'zap_host', f'owasp-zap.{zap_namespace}.svc.cluster.local'),
             zap_port=getattr(settings, 'zap_port', 8080),
-            zap_api_key=getattr(settings, 'zap_api_key', None)
+            zap_api_key=None  # No API key - ZAP runs with api.disablekey=true
         )
 
         # Check if ZAP is available

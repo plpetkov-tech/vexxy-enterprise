@@ -7,9 +7,12 @@ Scans exposed ports for common web vulnerabilities.
 import logging
 import time
 import json
+import subprocess
 from typing import Dict, List, Optional
 from zapv2 import ZAPv2
 import requests
+from kubernetes import client, config
+from kubernetes.client.rest import ApiException
 
 logger = logging.getLogger(__name__)
 
@@ -261,3 +264,234 @@ class ZAPService:
             target_ports=ports,
             scan_depth=scan_depth
         )
+
+    @staticmethod
+    def is_zap_installed(namespace: str = "security") -> bool:
+        """
+        Check if OWASP ZAP is installed in the cluster
+
+        Args:
+            namespace: Kubernetes namespace to check (default: security)
+
+        Returns:
+            True if ZAP is installed, False otherwise
+        """
+        try:
+            # Load Kubernetes config
+            try:
+                from config.settings import settings
+                if settings.k8s_in_cluster:
+                    config.load_incluster_config()
+                else:
+                    config.load_kube_config()
+            except:
+                config.load_kube_config()
+
+            apps_v1 = client.AppsV1Api()
+
+            # Check for ZAP deployment
+            try:
+                deployment = apps_v1.read_namespaced_deployment(
+                    name="owasp-zap",
+                    namespace=namespace
+                )
+                logger.info(f"OWASP ZAP deployment found in namespace {namespace}")
+                return True
+            except ApiException as e:
+                if e.status == 404:
+                    logger.info(f"OWASP ZAP deployment not found in namespace {namespace}")
+                    return False
+                raise
+
+        except Exception as e:
+            logger.error(f"Error checking ZAP installation: {e}", exc_info=True)
+            return False
+
+    @staticmethod
+    def install_zap(namespace: str = "security") -> bool:
+        """
+        Install OWASP ZAP in the Kubernetes cluster
+
+        Args:
+            namespace: Kubernetes namespace (default: security)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        logger.info(f"Installing OWASP ZAP in namespace {namespace}...")
+
+        try:
+            # Load Kubernetes config
+            try:
+                from config.settings import settings
+                if settings.k8s_in_cluster:
+                    config.load_incluster_config()
+                else:
+                    config.load_kube_config()
+            except:
+                config.load_kube_config()
+
+            core_v1 = client.CoreV1Api()
+            apps_v1 = client.AppsV1Api()
+
+            # Create namespace if it doesn't exist
+            try:
+                core_v1.read_namespace(namespace)
+                logger.info(f"Namespace {namespace} already exists")
+            except ApiException as e:
+                if e.status == 404:
+                    logger.info(f"Creating namespace {namespace}")
+                    namespace_body = client.V1Namespace(
+                        metadata=client.V1ObjectMeta(
+                            name=namespace,
+                            labels={
+                                "app": "vexxy",
+                                "vexxy.dev/component": "security"
+                            }
+                        )
+                    )
+                    core_v1.create_namespace(body=namespace_body)
+
+            # Create ZAP deployment
+            logger.info("Creating OWASP ZAP deployment...")
+
+            # Container configuration
+            container = client.V1Container(
+                name="zap",
+                image="ghcr.io/zaproxy/zaproxy:stable",
+                command=["zap.sh"],
+                args=[
+                    "-daemon",
+                    "-host", "0.0.0.0",
+                    "-port", "8080",
+                    "-config", "api.disablekey=true",  # No API key for now
+                    "-config", "api.addrs.addr.name=.*",
+                    "-config", "api.addrs.addr.regex=true"
+                ],
+                ports=[
+                    client.V1ContainerPort(container_port=8080, protocol="TCP")
+                ],
+                resources=client.V1ResourceRequirements(
+                    limits={"cpu": "2", "memory": "2Gi"},
+                    requests={"cpu": "500m", "memory": "512Mi"}
+                ),
+                liveness_probe=client.V1Probe(
+                    http_get=client.V1HTTPGetAction(
+                        path="/",
+                        port=8080
+                    ),
+                    initial_delay_seconds=30,
+                    period_seconds=10
+                ),
+                readiness_probe=client.V1Probe(
+                    http_get=client.V1HTTPGetAction(
+                        path="/",
+                        port=8080
+                    ),
+                    initial_delay_seconds=10,
+                    period_seconds=5
+                )
+            )
+
+            # Deployment spec
+            deployment = client.V1Deployment(
+                api_version="apps/v1",
+                kind="Deployment",
+                metadata=client.V1ObjectMeta(
+                    name="owasp-zap",
+                    namespace=namespace,
+                    labels={
+                        "app": "owasp-zap",
+                        "vexxy.dev/component": "security-scanner"
+                    }
+                ),
+                spec=client.V1DeploymentSpec(
+                    replicas=1,
+                    selector=client.V1LabelSelector(
+                        match_labels={"app": "owasp-zap"}
+                    ),
+                    template=client.V1PodTemplateSpec(
+                        metadata=client.V1ObjectMeta(
+                            labels={"app": "owasp-zap"}
+                        ),
+                        spec=client.V1PodSpec(
+                            containers=[container]
+                        )
+                    )
+                )
+            )
+
+            apps_v1.create_namespaced_deployment(
+                namespace=namespace,
+                body=deployment
+            )
+            logger.info("OWASP ZAP deployment created successfully")
+
+            # Create Service to expose ZAP
+            logger.info("Creating OWASP ZAP service...")
+
+            service = client.V1Service(
+                api_version="v1",
+                kind="Service",
+                metadata=client.V1ObjectMeta(
+                    name="owasp-zap",
+                    namespace=namespace,
+                    labels={
+                        "app": "owasp-zap",
+                        "vexxy.dev/component": "security-scanner"
+                    }
+                ),
+                spec=client.V1ServiceSpec(
+                    selector={"app": "owasp-zap"},
+                    ports=[
+                        client.V1ServicePort(
+                            name="zap-api",
+                            protocol="TCP",
+                            port=8080,
+                            target_port=8080
+                        )
+                    ],
+                    type="ClusterIP"
+                )
+            )
+
+            core_v1.create_namespaced_service(
+                namespace=namespace,
+                body=service
+            )
+            logger.info("OWASP ZAP service created successfully")
+
+            # Wait for deployment to be ready
+            logger.info("Waiting for OWASP ZAP to be ready...")
+            max_wait = 120  # 2 minutes
+            waited = 0
+
+            while waited < max_wait:
+                try:
+                    deployment_status = apps_v1.read_namespaced_deployment_status(
+                        name="owasp-zap",
+                        namespace=namespace
+                    )
+
+                    if deployment_status.status.ready_replicas and deployment_status.status.ready_replicas > 0:
+                        logger.info("OWASP ZAP is ready")
+                        return True
+
+                except ApiException:
+                    pass
+
+                time.sleep(5)
+                waited += 5
+
+            logger.warning("OWASP ZAP deployment created but not ready yet (may still be starting)")
+            return True  # Consider it successful even if not ready yet
+
+        except ApiException as e:
+            if e.status == 409:
+                logger.info("OWASP ZAP already exists (conflict)")
+                return True
+            logger.error(f"Kubernetes API error installing ZAP: {e}", exc_info=True)
+            return False
+        except Exception as e:
+            logger.error(f"Failed to install OWASP ZAP: {e}", exc_info=True)
+            return False
