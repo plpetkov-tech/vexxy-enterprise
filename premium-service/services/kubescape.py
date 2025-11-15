@@ -21,6 +21,7 @@ from exceptions import (
     InternalServiceError
 )
 from utils import retry_with_backoff, RetryConfig
+from utils.kubernetes_config import is_config_loaded, load_kubernetes_config
 
 logger = logging.getLogger(__name__)
 
@@ -46,14 +47,12 @@ class KubescapeService:
         """
         self.namespace = namespace or settings.k8s_sandbox_namespace
 
-        # Load kubeconfig
+        # Load kubeconfig only if not already loaded
         try:
-            if settings.k8s_in_cluster:
-                config.load_incluster_config()
-                logger.info("Loaded in-cluster Kubernetes configuration")
+            if not is_config_loaded():
+                load_kubernetes_config(in_cluster=settings.k8s_in_cluster)
             else:
-                config.load_kube_config()
-                logger.info("Loaded local kubeconfig")
+                logger.debug("Kubernetes config already loaded, reusing existing configuration")
         except Exception as e:
             logger.error(f"Failed to load Kubernetes config: {e}", exc_info=True)
             raise KubernetesError(
@@ -142,18 +141,56 @@ class KubescapeService:
         """
         Check if Kubescape is installed in the cluster
 
+        This method checks for:
+        1. Kubescape namespace existence
+        2. Kubescape operator deployment
+        3. Required CRDs (with leniency for startup delays)
+
         Returns:
-            True if Kubescape is installed, False otherwise
+            True if Kubescape is installed (even if CRDs are still initializing), False otherwise
 
         Raises:
             KubernetesError: If API call fails
         """
         try:
             # Check for Kubescape namespace
-            self.core_v1.read_namespace("kubescape")
-            logger.info("Kubescape namespace found")
+            try:
+                self.core_v1.read_namespace("kubescape")
+                logger.info("Kubescape namespace found")
+            except ApiException as e:
+                if e.status == 404:
+                    logger.info("Kubescape namespace not found")
+                    return False
+                raise
 
-            # Check for Kubescape CRDs
+            # Check for Kubescape operator deployment (more reliable than CRDs)
+            try:
+                deployment = self.apps_v1.read_namespaced_deployment(
+                    name="kubescape",
+                    namespace="kubescape"
+                )
+                logger.info("Kubescape operator deployment found")
+
+                # If deployment exists, consider Kubescape installed
+                # even if CRDs are not fully registered yet
+                deployment_ready = (
+                    deployment.status.ready_replicas and
+                    deployment.status.ready_replicas > 0
+                )
+
+                if deployment_ready:
+                    logger.info("Kubescape operator is running and ready")
+                else:
+                    logger.info("Kubescape operator deployment exists but may still be starting")
+
+            except ApiException as e:
+                if e.status == 404:
+                    logger.info("Kubescape operator deployment not found")
+                    # No deployment means not installed
+                    return False
+                raise
+
+            # Check for Kubescape CRDs (optional check - warn if missing but don't fail)
             api_client = client.ApiClient()
             api_instance = client.ApiextensionsV1Api(api_client)
 
@@ -168,10 +205,16 @@ class KubescapeService:
             missing_crds = [crd for crd in required_crds if crd not in crd_names]
 
             if missing_crds:
-                logger.warning(f"Kubescape CRDs missing: {missing_crds}")
-                return False
+                logger.warning(
+                    f"Kubescape CRDs not yet registered (may still be initializing): {missing_crds}. "
+                    f"This is normal during startup."
+                )
+                # Don't return False here - deployment exists, so Kubescape is installed
+                # CRDs will be registered shortly
+            else:
+                logger.info("All required Kubescape CRDs found")
 
-            logger.info("All required Kubescape CRDs found")
+            # If we got here, namespace and deployment exist
             return True
 
         except ApiException as e:

@@ -13,6 +13,7 @@ from zapv2 import ZAPv2
 import requests
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
+from utils.kubernetes_config import is_config_loaded, load_kubernetes_config
 
 logger = logging.getLogger(__name__)
 
@@ -270,24 +271,39 @@ class ZAPService:
         """
         Check if OWASP ZAP is installed in the cluster
 
+        This method checks for:
+        1. Namespace existence
+        2. ZAP deployment existence
+        3. ZAP service existence (optional)
+
         Args:
             namespace: Kubernetes namespace to check (default: security)
 
         Returns:
-            True if ZAP is installed, False otherwise
+            True if ZAP is installed (even if still starting), False otherwise
+
+        Note:
+            Assumes Kubernetes configuration has already been loaded.
+            Call load_kubernetes_config() before using this method.
         """
         try:
-            # Load Kubernetes config
-            try:
+            # Ensure config is loaded (will be a no-op if already loaded)
+            if not is_config_loaded():
                 from config.settings import settings
-                if settings.k8s_in_cluster:
-                    config.load_incluster_config()
-                else:
-                    config.load_kube_config()
-            except:
-                config.load_kube_config()
+                load_kubernetes_config(in_cluster=settings.k8s_in_cluster)
 
+            core_v1 = client.CoreV1Api()
             apps_v1 = client.AppsV1Api()
+
+            # Check if namespace exists
+            try:
+                core_v1.read_namespace(namespace)
+                logger.debug(f"Namespace {namespace} found")
+            except ApiException as e:
+                if e.status == 404:
+                    logger.info(f"Namespace {namespace} not found - ZAP not installed")
+                    return False
+                raise
 
             # Check for ZAP deployment
             try:
@@ -296,7 +312,21 @@ class ZAPService:
                     namespace=namespace
                 )
                 logger.info(f"OWASP ZAP deployment found in namespace {namespace}")
+
+                # Check deployment status
+                deployment_ready = (
+                    deployment.status.ready_replicas and
+                    deployment.status.ready_replicas > 0
+                )
+
+                if deployment_ready:
+                    logger.info("OWASP ZAP deployment is running and ready")
+                else:
+                    logger.info("OWASP ZAP deployment exists but may still be starting")
+
+                # If deployment exists, consider ZAP installed regardless of ready status
                 return True
+
             except ApiException as e:
                 if e.status == 404:
                     logger.info(f"OWASP ZAP deployment not found in namespace {namespace}")
@@ -310,26 +340,33 @@ class ZAPService:
     @staticmethod
     def install_zap(namespace: str = "security") -> bool:
         """
-        Install OWASP ZAP in the Kubernetes cluster
+        Install OWASP ZAP in the Kubernetes cluster (idempotent)
+
+        This method is idempotent - it checks if ZAP is already installed
+        and skips installation if it exists.
 
         Args:
             namespace: Kubernetes namespace (default: security)
 
         Returns:
-            True if successful, False otherwise
+            True if successful or already installed, False on error
+
+        Note:
+            Assumes Kubernetes configuration has already been loaded.
+            Call load_kubernetes_config() before using this method.
         """
+        # Check if ZAP is already installed (idempotent)
+        if ZAPService.is_zap_installed(namespace=namespace):
+            logger.info(f"OWASP ZAP is already installed in namespace {namespace}, skipping installation")
+            return True
+
         logger.info(f"Installing OWASP ZAP in namespace {namespace}...")
 
         try:
-            # Load Kubernetes config
-            try:
+            # Ensure config is loaded (will be a no-op if already loaded)
+            if not is_config_loaded():
                 from config.settings import settings
-                if settings.k8s_in_cluster:
-                    config.load_incluster_config()
-                else:
-                    config.load_kube_config()
-            except:
-                config.load_kube_config()
+                load_kubernetes_config(in_cluster=settings.k8s_in_cluster)
 
             core_v1 = client.CoreV1Api()
             apps_v1 = client.AppsV1Api()
@@ -488,7 +525,9 @@ class ZAPService:
 
         except ApiException as e:
             if e.status == 409:
-                logger.info("OWASP ZAP already exists (conflict)")
+                # Resource already exists - this shouldn't happen since we check first,
+                # but handle it gracefully (race condition between check and create)
+                logger.info("OWASP ZAP already exists (conflict during creation - likely race condition)")
                 return True
             logger.error(f"Kubernetes API error installing ZAP: {e}", exc_info=True)
             return False
