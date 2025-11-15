@@ -49,27 +49,23 @@ def update_job_status(db, job, status: JobStatus, progress: int, phase: str):
 
 def ensure_kubescape_installed() -> bool:
     """
-    Ensure Kubescape is installed in the cluster
+    Check that Kubescape is installed in the cluster
+
+    Note: Kubescape should be installed during service startup.
+    This function only verifies the installation exists.
 
     Returns:
-        True if installed (or successfully installed), False otherwise
+        True if installed, False otherwise
     """
-    logger.info("Checking Kubescape installation...")
+    logger.info("Verifying Kubescape installation...")
 
     kubescape_service = get_kubescape_service()
     if kubescape_service.is_kubescape_installed():
-        logger.info("Kubescape is already installed")
+        logger.info("Kubescape is installed and ready")
         return True
 
-    logger.info("Kubescape not found, installing...")
-    success = kubescape_service.install_kubescape()
-
-    if success:
-        logger.info("Kubescape installed successfully")
-    else:
-        logger.error("Failed to install Kubescape")
-
-    return success
+    logger.error("Kubescape is not installed. It should have been installed during service startup.")
+    return False
 
 
 def deploy_workload_for_analysis(
