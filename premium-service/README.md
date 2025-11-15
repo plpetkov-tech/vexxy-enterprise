@@ -64,84 +64,81 @@ The service now integrates with **Kubescape** for production-grade runtime analy
 
 ## Quick Start
 
+> **🚀 New:** Use `./dev.sh` for one-command setup!
+
 ### Prerequisites
 
-- Python 3.11+
 - Docker & Docker Compose
-- PostgreSQL 15+
-- Redis 7+
-- Kubernetes cluster (for sandbox execution)
+- kubectl (with access to Kubernetes cluster)
+- Kubernetes cluster with:
+  - Kubescape installed in `kubescape` namespace
+  - OWASP ZAP installed in `security` namespace
 
-### 1. Clone and Setup
+### One-Command Start
 
 ```bash
 cd premium-service
 
-# Copy environment file
-cp .env.example .env
+# Start everything and follow logs (Ctrl+C to stop)
+./dev.sh run
 
-# Edit .env with your settings
-nano .env
+# Or start in background
+./dev.sh start
 ```
 
-### 2. Start Services (Docker Compose)
+**That's it!** The script automatically handles:
+- ✓ Port-forwarding to OWASP ZAP
+- ✓ Building and starting all services
+- ✓ Running database migrations
+- ✓ Health checks and status monitoring
+
+### Available Commands
 
 ```bash
-# Start all services
-docker-compose up -d
+./dev.sh start      # Start all services in background
+./dev.sh stop       # Stop services (keeps data)
+./dev.sh down       # Stop and remove volumes (clean slate)
+./dev.sh restart    # Restart everything
 
-# View logs
-docker-compose logs -f
+./dev.sh status     # Show service health
+./dev.sh logs       # Show all logs
+./dev.sh test       # Run health checks
 
-# Check status
-docker-compose ps
+./dev.sh shell api  # Open shell in container
+./dev.sh psql       # Connect to database
+./dev.sh help       # Show all commands
 ```
 
-Services:
-- **API**: http://localhost:8001 (FastAPI)
+### Service Endpoints
+
+- **API**: http://localhost:8001
+- **API Docs**: http://localhost:8001/docs
 - **Flower**: http://localhost:5555 (Celery monitoring)
 - **PostgreSQL**: localhost:5432
 - **Redis**: localhost:6379
 
-### 3. Initialize Database
+### Quick Test
 
 ```bash
-# Create database tables
-docker-compose exec api python -c "from models.database import init_db; init_db()"
-
-# Or with Alembic (TODO: set up migrations)
-# docker-compose exec api alembic upgrade head
-```
-
-### 4. Test API
-
-```bash
-# Health check
-curl http://localhost:8001/health
-
 # Submit analysis job
-curl -X POST http://localhost:8001/api/v1/analysis/submit \
+curl -X POST http://localhost:8001/api/v1/analysis \
   -H "Content-Type: application/json" \
   -d '{
     "image_ref": "nginx:latest",
-    "image_digest": "sha256:4c0fdaa8b6341bfdeca5f18f7a2a65e6f4c7e37e32c66c62a7f0c6b9e4e71e5e",
+    "image_digest": "sha256:abc123...",
     "config": {
+      "ports": [80],
       "enable_fuzzing": true,
-      "test_timeout": 300
+      "analysis_duration": 60
     }
   }'
 
-# Get job status (use job_id from above response)
+# Check status
 curl http://localhost:8001/api/v1/analysis/{job_id}/status
 
-# List all jobs
-curl http://localhost:8001/api/v1/analysis
+# Get results (when complete)
+curl http://localhost:8001/api/v1/analysis/{job_id}/results
 ```
-
-### 5. API Documentation
-
-- **Swagger UI**: http://localhost:8001/docs
-- **ReDoc**: http://localhost:8001/redoc
 
 ---
 
