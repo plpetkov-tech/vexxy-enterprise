@@ -32,6 +32,7 @@ from middleware import (
     logging_middleware
 )
 from middleware.logging_middleware import configure_json_logging
+from utils.kubernetes_config import load_kubernetes_config
 
 # Configure structured logging if enabled
 if settings.environment == "production":
@@ -86,6 +87,25 @@ async def startup_event():
             "environment": settings.environment
         }
     )
+
+    # Load Kubernetes configuration once at startup
+    # This must happen before any Kubernetes-related services are instantiated
+    try:
+        logger.info("Loading Kubernetes configuration...", extra={"event": "k8s_config_load_start"})
+        load_kubernetes_config(in_cluster=settings.k8s_in_cluster)
+        logger.info("Kubernetes configuration loaded successfully", extra={"event": "k8s_config_load_success"})
+    except Exception as e:
+        logger.error(
+            f"Kubernetes configuration loading failed: {e}",
+            extra={
+                "event": "k8s_config_load_failed",
+                "error": str(e),
+                "error_type": type(e).__name__
+            },
+            exc_info=True
+        )
+        # Don't exit - allow app to start but Kubernetes-dependent features will fail
+        # This enables graceful degradation
 
     # Initialize database with proper error handling
     from models.database import init_db

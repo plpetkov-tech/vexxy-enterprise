@@ -13,6 +13,7 @@ from zapv2 import ZAPv2
 import requests
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
+from utils.kubernetes_config import is_config_loaded, load_kubernetes_config
 
 logger = logging.getLogger(__name__)
 
@@ -275,17 +276,16 @@ class ZAPService:
 
         Returns:
             True if ZAP is installed, False otherwise
+
+        Note:
+            Assumes Kubernetes configuration has already been loaded.
+            Call load_kubernetes_config() before using this method.
         """
         try:
-            # Load Kubernetes config
-            try:
+            # Ensure config is loaded (will be a no-op if already loaded)
+            if not is_config_loaded():
                 from config.settings import settings
-                if settings.k8s_in_cluster:
-                    config.load_incluster_config()
-                else:
-                    config.load_kube_config()
-            except:
-                config.load_kube_config()
+                load_kubernetes_config(in_cluster=settings.k8s_in_cluster)
 
             apps_v1 = client.AppsV1Api()
 
@@ -317,19 +317,18 @@ class ZAPService:
 
         Returns:
             True if successful, False otherwise
+
+        Note:
+            Assumes Kubernetes configuration has already been loaded.
+            Call load_kubernetes_config() before using this method.
         """
         logger.info(f"Installing OWASP ZAP in namespace {namespace}...")
 
         try:
-            # Load Kubernetes config
-            try:
+            # Ensure config is loaded (will be a no-op if already loaded)
+            if not is_config_loaded():
                 from config.settings import settings
-                if settings.k8s_in_cluster:
-                    config.load_incluster_config()
-                else:
-                    config.load_kube_config()
-            except:
-                config.load_kube_config()
+                load_kubernetes_config(in_cluster=settings.k8s_in_cluster)
 
             core_v1 = client.CoreV1Api()
             apps_v1 = client.AppsV1Api()
