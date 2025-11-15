@@ -219,10 +219,10 @@ class KubescapeService:
                 logger.error(f"Failed to get Helm version: {e.stderr}")
                 return False
 
-            # Add Kubescape Helm repo
+            # Add Kubescape Helm repo (idempotent - force update if exists)
             logger.info("Adding Kubescape Helm repository...")
             result = subprocess.run(
-                ["helm", "repo", "add", "kubescape", "https://kubescape.github.io/helm-charts"],
+                ["helm", "repo", "add", "kubescape", "https://kubescape.github.io/helm-charts", "--force-update"],
                 check=True,
                 capture_output=True,
                 text=True
@@ -259,34 +259,43 @@ grypeOfflineDB:
 
             # Write values to temp file
             import tempfile
+            import os
             with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
                 f.write(helm_values)
                 values_file = f.name
 
-            # Install Kubescape
-            logger.info("Installing Kubescape operator (this may take a few minutes)...")
-            result = subprocess.run(
-                [
-                    "helm", "install", "kubescape", "kubescape/kubescape-operator",
-                    "-n", "kubescape",
-                    "--create-namespace",
-                    "-f", values_file,
-                    "--wait",
-                    "--timeout", "5m"
-                ],
-                check=True,
-                capture_output=True,
-                text=True
-            )
+            try:
+                # Install or upgrade Kubescape (idempotent)
+                logger.info("Installing/upgrading Kubescape operator (this may take a few minutes)...")
+                result = subprocess.run(
+                    [
+                        "helm", "upgrade", "--install", "kubescape", "kubescape/kubescape-operator",
+                        "-n", "kubescape",
+                        "--create-namespace",
+                        "-f", values_file,
+                        "--wait",
+                        "--timeout", "5m"
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
 
-            logger.info(f"Kubescape installed successfully: {result.stdout}")
+                logger.info(f"Kubescape installed/upgraded successfully: {result.stdout}")
 
-            # Wait for Kubescape pods to be ready
-            logger.info("Waiting for Kubescape pods to be ready...")
-            time.sleep(30)
+                # Wait for Kubescape pods to be ready
+                logger.info("Waiting for Kubescape pods to be ready...")
+                time.sleep(30)
 
-            logger.info("Kubescape installation complete")
-            return True
+                logger.info("Kubescape installation complete")
+                return True
+
+            finally:
+                # Cleanup temp file
+                try:
+                    os.unlink(values_file)
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to cleanup temp values file: {cleanup_error}")
 
         except subprocess.CalledProcessError as e:
             logger.error(
