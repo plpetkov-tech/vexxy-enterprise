@@ -355,12 +355,23 @@ grypeOfflineDB:
         # Command (default: keep container running)
         command = job_config.get("command", ["/bin/sh", "-c", "sleep 600"])
 
+        # Container ports (if specified)
+        container_ports = []
+        for port in job_config.get("ports", []):
+            container_ports.append(
+                client.V1ContainerPort(
+                    container_port=port,
+                    protocol="TCP"
+                )
+            )
+
         # Container spec
         container = client.V1Container(
             name="target",
             image=f"{image_ref}@{image_digest}",
             command=command,
             env=env_vars,
+            ports=container_ports if container_ports else None,
             resources=client.V1ResourceRequirements(
                 limits={
                     "cpu": settings.sandbox_cpu_limit,
@@ -817,4 +828,171 @@ grypeOfflineDB:
                 message=f"Failed to get deployment status: {str(e)}",
                 service="kubernetes",
                 details={"deployment_name": deployment_name}
+            )
+
+    def create_service_for_deployment(
+        self,
+        deployment_name: str,
+        job_id: str,
+        ports: List[int]
+    ) -> Optional[str]:
+        """
+        Create a Kubernetes Service to expose deployment ports
+
+        Args:
+            deployment_name: Name of the deployment
+            job_id: Job ID for labels
+            ports: List of ports to expose
+
+        Returns:
+            Service name if created, None if no ports
+
+        Raises:
+            KubernetesError: If service creation fails
+        """
+        if not ports:
+            logger.info("No ports specified, skipping service creation")
+            return None
+
+        service_name = f"{deployment_name}-svc"
+
+        # Create port specifications
+        service_ports = []
+        for idx, port in enumerate(ports):
+            service_ports.append(
+                client.V1ServicePort(
+                    name=f"port-{port}",
+                    protocol="TCP",
+                    port=port,
+                    target_port=port
+                )
+            )
+
+        # Service spec
+        service = client.V1Service(
+            api_version="v1",
+            kind="Service",
+            metadata=client.V1ObjectMeta(
+                name=service_name,
+                namespace=self.namespace,
+                labels={
+                    "app": "vexxy-premium",
+                    "component": "analysis",
+                    "job-id": job_id
+                }
+            ),
+            spec=client.V1ServiceSpec(
+                selector={
+                    "app": "vexxy-premium",
+                    "job-id": job_id
+                },
+                ports=service_ports,
+                type="ClusterIP"
+            )
+        )
+
+        try:
+            self.core_v1.create_namespaced_service(
+                namespace=self.namespace,
+                body=service
+            )
+            logger.info(
+                f"Created service {service_name} exposing ports {ports}",
+                extra={
+                    "service_name": service_name,
+                    "deployment_name": deployment_name,
+                    "ports": ports,
+                    "namespace": self.namespace
+                }
+            )
+            return service_name
+
+        except ApiException as e:
+            logger.error(
+                f"Failed to create service: {e}",
+                extra={
+                    "service_name": service_name,
+                    "namespace": self.namespace,
+                    "status_code": e.status
+                },
+                exc_info=True
+            )
+            raise KubernetesError(
+                operation="create_service",
+                error=str(e),
+                details={
+                    "service_name": service_name,
+                    "namespace": self.namespace,
+                    "status_code": e.status
+                }
+            )
+        except Exception as e:
+            logger.error(f"Unexpected error creating service: {e}", exc_info=True)
+            raise InternalServiceError(
+                message=f"Failed to create service: {str(e)}",
+                service="kubernetes",
+                details={"service_name": service_name}
+            )
+
+    def delete_service(self, service_name: str):
+        """
+        Delete a Kubernetes Service
+
+        Args:
+            service_name: Name of service to delete
+
+        Raises:
+            KubernetesError: If deletion fails (except for 404)
+        """
+        if not service_name:
+            return
+
+        try:
+            self.core_v1.delete_namespaced_service(
+                name=service_name,
+                namespace=self.namespace
+            )
+            logger.info(
+                f"Deleted service {service_name}",
+                extra={
+                    "service_name": service_name,
+                    "namespace": self.namespace
+                }
+            )
+
+        except ApiException as e:
+            if e.status == 404:
+                logger.warning(
+                    f"Service {service_name} not found (already deleted?)",
+                    extra={"service_name": service_name, "namespace": self.namespace}
+                )
+            else:
+                logger.error(
+                    f"Failed to delete service: {e}",
+                    extra={
+                        "service_name": service_name,
+                        "namespace": self.namespace,
+                        "status_code": e.status
+                    },
+                    exc_info=True
+                )
+                raise KubernetesError(
+                    operation="delete_service",
+                    error=str(e),
+                    details={
+                        "service_name": service_name,
+                        "namespace": self.namespace,
+                        "status_code": e.status
+                    }
+                )
+        except Exception as e:
+            logger.error(
+                f"Unexpected error deleting service: {e}",
+                extra={"service_name": service_name},
+                exc_info=True
+            )
+            raise InternalServiceError(
+                message=f"Failed to delete service: {str(e)}",
+                service="kubernetes",
+                details={"service_name": service_name}
             )

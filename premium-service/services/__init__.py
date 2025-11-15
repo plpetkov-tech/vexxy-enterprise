@@ -7,6 +7,7 @@ from .reachability import ReachabilityAnalyzer, ReachabilityResult, Vulnerabilit
 from .evidence import EvidenceStorage
 from .sbom import SBOMService, MockSBOMService
 from .kubescape import KubescapeService
+from .owasp_zap import ZAPService
 
 __all__ = [
     "SandboxManager",
@@ -20,4 +21,5 @@ __all__ = [
     "SBOMService",
     "MockSBOMService",
     "KubescapeService",
+    "ZAPService",
 ]

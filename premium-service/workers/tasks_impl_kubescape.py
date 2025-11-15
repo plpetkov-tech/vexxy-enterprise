@@ -6,7 +6,7 @@ This is the real implementation that works with actual container images.
 """
 from datetime import datetime
 import logging
-from typing import Dict
+from typing import Dict, List, Optional
 import json
 
 from models import JobStatus
@@ -166,6 +166,103 @@ def wait_for_kubescape_analysis(
         logger.warning("Kubescape analysis timeout")
 
     return success
+
+
+def run_owasp_zap_scan(
+    deployment_name: str,
+    namespace: str,
+    ports: List[int],
+    job_id: str,
+    enable_fuzzing: bool = True
+) -> Optional[Dict]:
+    """
+    Run OWASP ZAP security scan against the deployed workload
+
+    Args:
+        deployment_name: Name of the deployment
+        namespace: Kubernetes namespace
+        ports: List of ports to scan
+        job_id: Job ID for evidence storage
+        enable_fuzzing: Whether fuzzing is enabled in config
+
+    Returns:
+        ZAP scan results dict, or None if scan was skipped
+    """
+    if not enable_fuzzing:
+        logger.info("OWASP ZAP scanning disabled in config")
+        return None
+
+    if not ports:
+        logger.info("No ports specified for OWASP ZAP scanning")
+        return None
+
+    logger.info(f"Starting OWASP ZAP scan on {deployment_name} ports {ports}")
+
+    try:
+        from services import ZAPService
+        from config.settings import settings
+
+        # Initialize ZAP service
+        # ZAP should be running as a separate service in the cluster or accessible
+        zap_service = ZAPService(
+            zap_host=getattr(settings, 'zap_host', 'localhost'),
+            zap_port=getattr(settings, 'zap_port', 8080),
+            zap_api_key=getattr(settings, 'zap_api_key', None)
+        )
+
+        # Check if ZAP is available
+        if not zap_service.is_zap_available():
+            logger.warning("OWASP ZAP is not available, skipping scan")
+            return {
+                "status": "skipped",
+                "reason": "zap_not_available",
+                "scanned_urls": []
+            }
+
+        # Scan the Kubernetes service
+        # Service DNS name: <deployment>-svc.<namespace>.svc.cluster.local
+        service_name = f"{deployment_name}-svc"
+
+        results = zap_service.scan_kubernetes_service(
+            service_name=service_name,
+            namespace=namespace,
+            ports=ports,
+            scan_depth="medium"  # Could be made configurable
+        )
+
+        # Store results as evidence
+        evidence_storage.store_fuzzing_results(job_id, results)
+
+        logger.info(
+            f"ZAP scan completed: {results['summary']['total_alerts']} alerts found "
+            f"(High: {results['summary']['high_risk']}, "
+            f"Medium: {results['summary']['medium_risk']}, "
+            f"Low: {results['summary']['low_risk']})"
+        )
+
+        return results
+
+    except Exception as e:
+        logger.error(f"OWASP ZAP scan failed: {e}", exc_info=True)
+        # Return error result instead of failing the entire job
+        error_result = {
+            "status": "failed",
+            "error": str(e),
+            "scanned_urls": [],
+            "summary": {
+                "high_risk": 0,
+                "medium_risk": 0,
+                "low_risk": 0,
+                "informational": 0,
+                "total_alerts": 0
+            }
+        }
+        # Still store the error result as evidence
+        try:
+            evidence_storage.store_fuzzing_results(job_id, error_result)
+        except:
+            pass
+        return error_result
 
 
 def extract_kubescape_results(

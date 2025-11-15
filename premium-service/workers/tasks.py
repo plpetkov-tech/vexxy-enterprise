@@ -17,6 +17,7 @@ from .tasks_impl_kubescape import (
     ensure_kubescape_installed as _ensure_kubescape_installed,
     deploy_workload_for_analysis as _deploy_workload,
     wait_for_workload_ready as _wait_for_workload_ready,
+    run_owasp_zap_scan as _run_owasp_zap_scan,
     wait_for_kubescape_analysis as _wait_for_kubescape_analysis,
     extract_kubescape_results as _extract_kubescape_results,
     process_kubescape_vex as _process_kubescape_vex,
@@ -62,24 +63,29 @@ def run_premium_analysis(self, job_id: str, image_ref: str, image_digest: str, c
     """
     Main task for premium analysis using Kubescape
 
-    New Phases (Kubescape-based):
+    Phases:
     1. Ensure Kubescape is installed
     2. Deploy workload for analysis
-    3. Wait for Kubescape runtime analysis
-    4. Extract VEX and filtered SBOM from Kubescape
-    5. Process and save results
-    6. Cleanup
+    3. Wait for workload to be ready
+    3.5. Create Kubernetes Service (if ports specified)
+    3.6. Run OWASP ZAP security scan (if ports and fuzzing enabled)
+    4. Wait for Kubescape runtime analysis
+    5. Extract VEX and filtered SBOM from Kubescape
+    6. Process VEX document
+    7. Generate analysis summary
+    8. Cleanup (service and deployment)
 
     Args:
         job_id: UUID of the analysis job
         image_ref: Container image reference
         image_digest: Image digest (sha256:...)
-        config: Analysis configuration dictionary
+        config: Analysis configuration dictionary (includes ports, enable_fuzzing)
     """
     logger.info(f"Starting Kubescape-based premium analysis for job {job_id}")
 
     db = SessionLocal()
     deployment_name = None
+    service_name = None
 
     try:
         # Get job from database
@@ -111,6 +117,41 @@ def run_premium_analysis(self, job_id: str, image_ref: str, image_digest: str, c
         _update_job_status(db, job, JobStatus.RUNNING, 25, "Workload starting")
         if not _wait_for_workload_ready(deployment_name, timeout=120):
             raise RuntimeError("Workload failed to become ready")
+
+        # Phase 3.5: Create Service and run OWASP ZAP scan (if ports specified)
+        ports = config.get("ports", [])
+        if ports:
+            logger.info(f"[{job_id}] Phase 3.5: Creating service for ports {ports}")
+            _update_job_status(db, job, JobStatus.RUNNING, 30, "Creating service")
+
+            from services import KubescapeService
+            from config.settings import settings
+            kubescape_service = KubescapeService(namespace=settings.k8s_sandbox_namespace)
+
+            service_name = kubescape_service.create_service_for_deployment(
+                deployment_name=deployment_name,
+                job_id=str(job.id),
+                ports=ports
+            )
+
+            # Run OWASP ZAP scan
+            logger.info(f"[{job_id}] Phase 3.6: Running OWASP ZAP scan")
+            _update_job_status(db, job, JobStatus.RUNNING, 32, "Security scanning")
+
+            zap_results = _run_owasp_zap_scan(
+                deployment_name=deployment_name,
+                namespace=settings.k8s_sandbox_namespace,
+                ports=ports,
+                job_id=str(job.id),
+                enable_fuzzing=config.get("enable_fuzzing", True)
+            )
+
+            if zap_results and zap_results.get("status") == "completed":
+                logger.info(
+                    f"[{job_id}] ZAP scan found {zap_results['summary']['total_alerts']} alerts "
+                    f"(High: {zap_results['summary']['high_risk']}, "
+                    f"Medium: {zap_results['summary']['medium_risk']})"
+                )
 
         # Phase 4: Wait for Kubescape runtime analysis
         logger.info(f"[{job_id}] Phase 4: Kubescape runtime analysis")
@@ -196,13 +237,23 @@ def run_premium_analysis(self, job_id: str, image_ref: str, image_digest: str, c
         raise
 
     finally:
-        # Always cleanup deployment
+        # Always cleanup service and deployment
+        if service_name:
+            try:
+                logger.info(f"[{job_id}] Cleaning up service {service_name}")
+                from services import KubescapeService
+                from config.settings import settings
+                kubescape_service = KubescapeService(namespace=settings.k8s_sandbox_namespace)
+                kubescape_service.delete_service(service_name)
+            except Exception as cleanup_error:
+                logger.error(f"[{job_id}] Service cleanup failed: {cleanup_error}")
+
         if deployment_name:
             try:
                 logger.info(f"[{job_id}] Cleaning up deployment {deployment_name}")
                 _cleanup_workload(deployment_name)
             except Exception as cleanup_error:
-                logger.error(f"[{job_id}] Cleanup failed: {cleanup_error}")
+                logger.error(f"[{job_id}] Deployment cleanup failed: {cleanup_error}")
 
         # Close database session
         db.close()
