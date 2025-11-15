@@ -105,6 +105,73 @@ async def startup_event():
         # Don't exit - allow app to start but health check will fail
         # This enables graceful degradation and better visibility
 
+    # Install Kubescape on startup (one-time setup)
+    try:
+        from services import KubescapeService
+        logger.info("Checking Kubescape installation...", extra={"event": "kubescape_init_start"})
+
+        kubescape_service = KubescapeService()
+        if kubescape_service.is_kubescape_installed():
+            logger.info("Kubescape is already installed", extra={"event": "kubescape_already_installed"})
+        else:
+            logger.info("Kubescape not found, installing...", extra={"event": "kubescape_installing"})
+            success = kubescape_service.install_kubescape()
+
+            if success:
+                logger.info("Kubescape installed successfully", extra={"event": "kubescape_install_success"})
+            else:
+                logger.error("Kubescape installation failed", extra={"event": "kubescape_install_failed"})
+                # Don't exit - allow app to start but analysis tasks will fail
+    except Exception as e:
+        logger.error(
+            f"Kubescape initialization failed: {e}",
+            extra={
+                "event": "kubescape_init_failed",
+                "error": str(e),
+                "error_type": type(e).__name__
+            },
+            exc_info=True
+        )
+        # Don't exit - allow app to start but analysis tasks will fail
+
+    # Initialize OWASP ZAP availability check
+    # Note: ZAP should be deployed separately (e.g., as a K8s service)
+    # API key can be configured via settings.zap_api_key when needed for production
+    # For now, we're running without API key authentication (api.disablekey=true on ZAP side)
+    try:
+        from services import ZAPService
+        logger.info("Checking OWASP ZAP availability...", extra={"event": "zap_init_start"})
+
+        # Initialize ZAP service without API key for now
+        zap_service = ZAPService(
+            zap_host=getattr(settings, 'zap_host', 'localhost'),
+            zap_port=getattr(settings, 'zap_port', 8080),
+            zap_api_key=None  # No API key for now - ZAP should run with api.disablekey=true
+        )
+
+        if zap_service.is_zap_available():
+            logger.info(
+                "OWASP ZAP is available and ready for security scanning",
+                extra={"event": "zap_available"}
+            )
+        else:
+            logger.warning(
+                "OWASP ZAP is not available - security scanning will be skipped",
+                extra={"event": "zap_not_available"}
+            )
+            # Don't fail startup - ZAP is optional for analysis
+    except Exception as e:
+        logger.warning(
+            f"OWASP ZAP initialization check failed: {e}",
+            extra={
+                "event": "zap_init_failed",
+                "error": str(e),
+                "error_type": type(e).__name__
+            },
+            exc_info=True
+        )
+        # Don't exit - ZAP is optional, analysis can proceed without it
+
 
 # Shutdown event
 @app.on_event("shutdown")
