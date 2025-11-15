@@ -50,16 +50,21 @@ services:
       ENVIRONMENT: development
       LOG_LEVEL: INFO
       K8S_IN_CLUSTER: "false"
-      KUBECONFIG: /root/.kube/config
     volumes:
       - .:/app
-      - ${HOME}/.kube/config:/root/.kube/config:ro  # Kubernetes access
+      - ${HOME}/.kube:/tmp/kubeconfig:ro  # Kubernetes config (mounted to temp location)
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   # Celery Worker
   worker:
@@ -76,17 +81,22 @@ services:
       ENVIRONMENT: development
       LOG_LEVEL: INFO
       K8S_IN_CLUSTER: "false"
-      KUBECONFIG: /root/.kube/config
     volumes:
       - .:/app
       - /var/run/docker.sock:/var/run/docker.sock  # For Docker operations
-      - ${HOME}/.kube/config:/root/.kube/config:ro  # Kubernetes access
+      - ${HOME}/.kube:/tmp/kubeconfig:ro  # Kubernetes config (mounted to temp location)
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A workers.celery_app inspect ping -d celery@$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   # Celery Flower (monitoring)
   flower:
@@ -101,13 +111,18 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/0
       K8S_IN_CLUSTER: "false"
-      KUBECONFIG: /root/.kube/config
     volumes:
       - .:/app
-      - ${HOME}/.kube/config:/root/.kube/config:ro
+      - ${HOME}/.kube:/tmp/kubeconfig:ro  # Kubernetes config (mounted to temp location)
     depends_on:
       - redis
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5555/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
 volumes:
   postgres_data:
