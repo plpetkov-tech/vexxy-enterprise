@@ -123,6 +123,8 @@ class ExecutionProfile(BaseModel):
     loaded_libraries: List[str] = Field(default_factory=list)
     code_coverage_percent: Optional[float] = None
 
+    model_config = {"extra": "ignore"}  # Allow extra fields for metadata
+
 
 class ReachabilityResult(BaseModel):
     """Reachability analysis result for a CVE"""
