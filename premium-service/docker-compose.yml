@@ -50,8 +50,10 @@ services:
       ENVIRONMENT: development
       LOG_LEVEL: INFO
       K8S_IN_CLUSTER: "false"
+      KUBECONFIG: /root/.kube/config
     volumes:
       - .:/app
+      - ${HOME}/.kube/config:/root/.kube/config:ro  # Kubernetes access
     depends_on:
       postgres:
         condition: service_healthy
