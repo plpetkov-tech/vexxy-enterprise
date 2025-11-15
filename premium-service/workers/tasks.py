@@ -159,7 +159,7 @@ def run_premium_analysis(self, job_id: str, image_ref: str, image_digest: str, c
         job.execution_profile = {
             "method": "kubescape_runtime",
             "vex_statements": len(vex_document.get("statements", [])),
-            "filtered_components": len(kubescape_results.get("filtered_sbom", {}).get("components", []))
+            "filtered_components": len((kubescape_results.get("filtered_sbom") or {}).get("components", []))
         }
         db.commit()
 

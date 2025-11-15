@@ -241,14 +241,24 @@ class KubescapeService:
             # Install Kubescape with VEX and filtered SBOM enabled
             helm_values = """
 capabilities:
-  relevancy: enable
+  vexGeneration: enable
   vulnerabilityScan: enable
+  relevancy: enable
+  runtimeObservability: enable
+  networkEventsStreaming: disable
 
 nodeAgent:
   enabled: true
+  config:
+    applicationActivityTime: 5m
+    learningPeriod: 5m
+    maxLearningPeriod: 5m
+    updatePeriod: 1m
 
 kubevuln:
   enabled: true
+  config:
+    storeFilteredSbom: true
 
 storage:
   enabled: true
