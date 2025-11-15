@@ -199,12 +199,12 @@ def run_owasp_zap_scan(
         from config.settings import settings
 
         # Initialize ZAP service
-        # ZAP is deployed in the 'security' namespace by default
-        zap_namespace = getattr(settings, 'zap_namespace', 'security')
+        # Note: When running outside K8s (docker-compose), use kubectl port-forward:
+        #   kubectl port-forward -n security svc/owasp-zap 8080:8080
         zap_service = ZAPService(
-            zap_host=getattr(settings, 'zap_host', f'owasp-zap.{zap_namespace}.svc.cluster.local'),
-            zap_port=getattr(settings, 'zap_port', 8080),
-            zap_api_key=None  # No API key - ZAP runs with api.disablekey=true
+            zap_host=settings.zap_host,
+            zap_port=settings.zap_port,
+            zap_api_key=settings.zap_api_key
         )
 
         # Check if ZAP is available

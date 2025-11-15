@@ -50,6 +50,11 @@ services:
       ENVIRONMENT: development
       LOG_LEVEL: INFO
       K8S_IN_CLUSTER: "false"
+      # OWASP ZAP connection (requires port-forward: kubectl port-forward -n security svc/owasp-zap 8080:8080)
+      ZAP_HOST: ${ZAP_HOST:-host.docker.internal}
+      ZAP_PORT: ${ZAP_PORT:-8080}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Allow accessing host's localhost
     volumes:
       - .:/app
       - ${HOME}/.kube:/tmp/kubeconfig:ro  # Kubernetes config (mounted to temp location)
@@ -81,6 +86,11 @@ services:
       ENVIRONMENT: development
       LOG_LEVEL: INFO
       K8S_IN_CLUSTER: "false"
+      # OWASP ZAP connection (requires port-forward: kubectl port-forward -n security svc/owasp-zap 8080:8080)
+      ZAP_HOST: ${ZAP_HOST:-host.docker.internal}
+      ZAP_PORT: ${ZAP_PORT:-8080}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Allow accessing host's localhost
     volumes:
       - .:/app
       - /var/run/docker.sock:/var/run/docker.sock  # For Docker operations

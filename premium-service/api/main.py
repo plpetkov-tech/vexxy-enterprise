@@ -177,22 +177,23 @@ async def startup_event():
                 # Don't exit - allow app to start but security scanning will be skipped
 
         # Verify ZAP is accessible
-        zap_host = getattr(settings, 'zap_host', f'owasp-zap.{zap_namespace}.svc.cluster.local')
+        # Note: When running outside K8s (docker-compose), use kubectl port-forward:
+        #   kubectl port-forward -n security svc/owasp-zap 8080:8080
         zap_service = ZAPService(
-            zap_host=zap_host,
-            zap_port=getattr(settings, 'zap_port', 8080),
-            zap_api_key=None  # No API key - ZAP runs with api.disablekey=true
+            zap_host=settings.zap_host,
+            zap_port=settings.zap_port,
+            zap_api_key=settings.zap_api_key
         )
 
         if zap_service.is_zap_available():
             logger.info(
                 "OWASP ZAP is available and ready for security scanning",
-                extra={"event": "zap_available", "zap_host": zap_host}
+                extra={"event": "zap_available", "zap_host": settings.zap_host}
             )
         else:
             logger.warning(
                 "OWASP ZAP is not yet available - it may still be starting up",
-                extra={"event": "zap_not_available", "zap_host": zap_host}
+                extra={"event": "zap_not_available", "zap_host": settings.zap_host}
             )
             # Don't fail startup - ZAP may still be starting
 
