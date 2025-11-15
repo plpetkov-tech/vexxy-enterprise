@@ -197,10 +197,11 @@ def run_premium_analysis(self, job_id: str, image_ref: str, image_digest: str, c
 
         # Save results to job
         job.reachability_results = summary
+        # Handle case where statements/components fields are null (Go nil slice marshals to JSON null)
         job.execution_profile = {
             "method": "kubescape_runtime",
-            "vex_statements": len(vex_document.get("statements", [])),
-            "filtered_components": len((kubescape_results.get("filtered_sbom") or {}).get("components", []))
+            "vex_statements": len(vex_document.get("statements") or []),
+            "filtered_components": len((kubescape_results.get("filtered_sbom") or {}).get("components") or [])
         }
         db.commit()
 
