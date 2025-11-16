@@ -127,12 +127,14 @@ deploy_services() {
     # Get postgres pod name
     local postgres_pod=$(kubectl get pods -n "$NAMESPACE" -l app=postgres -o jsonpath='{.items[0].metadata.name}')
     if [ -n "$postgres_pod" ]; then
-        for migration in migrations/*.sql 2>/dev/null; do
-            if [ -f "$migration" ]; then
-                print_info "Running migration: $(basename $migration)"
-                kubectl exec -n "$NAMESPACE" "$postgres_pod" -- psql -U vexxy -d vexxy_premium < "$migration" 2>/dev/null || true
-            fi
-        done
+        if [ -d "migrations" ]; then
+            for migration in migrations/*.sql; do
+                if [ -f "$migration" ]; then
+                    print_info "Running migration: $(basename $migration)"
+                    kubectl exec -n "$NAMESPACE" "$postgres_pod" -- psql -U vexxy -d vexxy_premium < "$migration" 2>/dev/null || true
+                fi
+            done
+        fi
     fi
 
     print_info "Waiting for services to be ready..."
