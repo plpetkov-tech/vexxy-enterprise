@@ -380,6 +380,51 @@ grypeOfflineDB:
             logger.error(f"Unexpected error installing Kubescape: {e}", exc_info=True)
             return False
 
+    def _create_tracee_sidecar(self, job_id: str) -> client.V1Container:
+        """
+        Create Tracee sidecar container for eBPF profiling
+
+        Args:
+            job_id: Job identifier
+
+        Returns:
+            V1Container configured for Tracee profiling
+        """
+        return client.V1Container(
+            name="tracee-profiler",
+            image="aquasec/tracee:latest",
+            command=[
+                "/tracee/tracee",
+                "--output", "format:json",
+                "--output", "option:parse-arguments",
+                "--output", "out-file:/tracee-output/events.json",
+                "--trace", "comm=target",  # Only trace the target container
+                "--trace", "event=open,openat,openat2,read,write,execve,connect,socket,clone,fork"
+            ],
+            volume_mounts=[
+                client.V1VolumeMount(
+                    name="tracee-output",
+                    mount_path="/tracee-output"
+                )
+            ],
+            resources=client.V1ResourceRequirements(
+                limits={
+                    "cpu": "500m",
+                    "memory": "512Mi"
+                },
+                requests={
+                    "cpu": "100m",
+                    "memory": "128Mi"
+                }
+            ),
+            security_context=client.V1SecurityContext(
+                privileged=True,  # Required for eBPF
+                capabilities=client.V1Capabilities(
+                    add=["SYS_ADMIN", "SYS_RESOURCE", "SYS_PTRACE"]
+                )
+            )
+        )
+
     def deploy_workload_for_analysis(
         self,
         job_id: str,
@@ -391,12 +436,13 @@ grypeOfflineDB:
         Deploy a workload that Kubescape will monitor and analyze
 
         Creates a Deployment (not Job) so Kubescape can perform runtime analysis.
+        Optionally includes Tracee sidecar for detailed runtime profiling.
 
         Args:
             job_id: Unique job identifier
             image_ref: Container image reference
             image_digest: Image digest
-            job_config: Analysis configuration
+            job_config: Analysis configuration (includes enable_profiling flag)
 
         Returns:
             deployment_name: Name of created Deployment
@@ -422,9 +468,12 @@ grypeOfflineDB:
             )
 
         # Container spec
+        # Note: Use image_ref without digest for local kind clusters to avoid pull issues
+        # Kubescape will still track by digest via annotations
         container = client.V1Container(
             name="target",
-            image=f"{image_ref}@{image_digest}",
+            image=image_ref,  # Use ref without digest for kind compatibility
+            image_pull_policy="IfNotPresent",  # Prefer local images (kind cluster)
             command=command,
             env=env_vars,
             ports=container_ports if container_ports else None,
@@ -444,6 +493,15 @@ grypeOfflineDB:
                 read_only_root_filesystem=False
             )
         )
+
+        # Build containers list
+        containers = [container]
+
+        # Add Tracee sidecar for runtime profiling if enabled
+        if job_config.get("enable_profiling", True):
+            tracee_container = self._create_tracee_sidecar(job_id)
+            containers.append(tracee_container)
+            logger.info(f"Tracee profiling enabled for deployment {deployment_name}")
 
         # Deployment spec
         deployment = client.V1Deployment(
@@ -481,8 +539,17 @@ grypeOfflineDB:
                         }
                     ),
                     spec=client.V1PodSpec(
-                        containers=[container],
-                        restart_policy="Always"
+                        containers=containers,
+                        restart_policy="Always",
+                        # Share process namespace if Tracee is enabled
+                        share_process_namespace=True if job_config.get("enable_profiling", True) else None,
+                        # Volumes for Tracee output
+                        volumes=[
+                            client.V1Volume(
+                                name="tracee-output",
+                                empty_dir={}
+                            )
+                        ] if job_config.get("enable_profiling", True) else None
                     )
                 )
             )
@@ -655,7 +722,8 @@ grypeOfflineDB:
         logger.info(f"Extracting runtime VEX for {deployment_name}")
 
         try:
-            # Get all VEX documents in kubescape namespace
+            # First, list VEX documents to find the name
+            # Note: list returns truncated data for large arrays, so we need to get the full object
             result = self.custom_objects_api.list_namespaced_custom_object(
                 group="spdx.softwarecomposition.kubescape.io",
                 version="v1beta1",
@@ -668,20 +736,36 @@ grypeOfflineDB:
             # Example: replicaset-vex-analysis-e8e35769-5bcc849bcb-target-2bdc-4cf6
             digest_short = image_digest.replace("sha256:", "")[:12]
 
+            vex_crd_name = None
             for item in result.get('items', []):
                 name = item['metadata']['name']
 
                 # Match by deployment name (more precise than first 8 chars)
                 # or by image digest for image-based matching
                 if deployment_name in name or digest_short in name:
-                    vex_spec = item.get('spec', {})
-                    logger.info(f"Found runtime VEX: {name}")
+                    vex_crd_name = name
+                    logger.info(f"Found runtime VEX CRD: {name}")
+                    break
 
-                    # Kubescape VEX format is already OpenVEX-compatible
-                    return vex_spec
+            if not vex_crd_name:
+                logger.warning(f"No runtime VEX found for {deployment_name}")
+                return None
 
-            logger.warning(f"No runtime VEX found for {deployment_name}")
-            return None
+            # Now fetch the full VEX document (list truncates large arrays)
+            vex_crd = self.custom_objects_api.get_namespaced_custom_object(
+                group="spdx.softwarecomposition.kubescape.io",
+                version="v1beta1",
+                namespace="kubescape",
+                plural="openvulnerabilityexchangecontainers",
+                name=vex_crd_name
+            )
+
+            vex_spec = vex_crd.get('spec', {})
+            statement_count = len(vex_spec.get('statements', []) or [])
+            logger.info(f"VEX spec contains {statement_count} statements")
+
+            # Kubescape VEX format is already OpenVEX-compatible
+            return vex_spec
 
         except ApiException as e:
             logger.error(f"Failed to extract runtime VEX: {e}")
@@ -703,7 +787,8 @@ grypeOfflineDB:
         logger.info(f"Extracting filtered SBOM for {deployment_name}")
 
         try:
-            # Get all filtered SBOMs in kubescape namespace
+            # First, list filtered SBOMs to find the name
+            # Note: list may return truncated data for large arrays
             result = self.custom_objects_api.list_namespaced_custom_object(
                 group="spdx.softwarecomposition.kubescape.io",
                 version="v1beta1",
@@ -715,22 +800,113 @@ grypeOfflineDB:
             # Filtered SBOM CRD names may follow similar pattern to VEX
             digest_short = image_digest.replace("sha256:", "")[:12]
 
+            sbom_crd_name = None
             for item in result.get('items', []):
                 name = item['metadata']['name']
 
                 # Match by deployment name (more precise than first 8 chars)
                 # or by image digest for image-based matching
                 if deployment_name in name or digest_short in name:
-                    sbom_spec = item.get('spec', {})
-                    logger.info(f"Found filtered SBOM: {name}")
+                    sbom_crd_name = name
+                    logger.info(f"Found filtered SBOM CRD: {name}")
+                    break
 
-                    return sbom_spec
+            if not sbom_crd_name:
+                logger.warning(f"No filtered SBOM found for {deployment_name}")
+                return None
 
-            logger.warning(f"No filtered SBOM found for {deployment_name}")
-            return None
+            # Now fetch the full SBOM document
+            sbom_crd = self.custom_objects_api.get_namespaced_custom_object(
+                group="spdx.softwarecomposition.kubescape.io",
+                version="v1beta1",
+                namespace="kubescape",
+                plural="sbomsyftfiltereds",
+                name=sbom_crd_name
+            )
+
+            sbom_spec = sbom_crd.get('spec', {})
+            component_count = len(sbom_spec.get('components', []) or [])
+            logger.info(f"Filtered SBOM contains {component_count} components")
+
+            return sbom_spec
 
         except ApiException as e:
             logger.error(f"Failed to extract filtered SBOM: {e}")
+            return None
+
+    def extract_tracee_profiling_data(self, deployment_name: str) -> Optional[str]:
+        """
+        Extract Tracee profiling data from the sidecar container
+
+        Args:
+            deployment_name: Name of the deployment
+
+        Returns:
+            Tracee JSON output as string, or None if not found/error
+        """
+        logger.info(f"Extracting Tracee profiling data from {deployment_name}")
+
+        try:
+            # Get the pod for this deployment
+            pods = self.core_v1.list_namespaced_pod(
+                namespace=self.namespace,
+                label_selector=f"app=vexxy-premium,component=analysis"
+            )
+
+            # Find pod matching deployment
+            target_pod = None
+            for pod in pods.items:
+                if deployment_name in pod.metadata.name:
+                    target_pod = pod
+                    break
+
+            if not target_pod:
+                logger.warning(f"No pod found for deployment {deployment_name}")
+                return None
+
+            pod_name = target_pod.metadata.name
+            logger.info(f"Found pod {pod_name} for Tracee data extraction")
+
+            # Read Tracee output file from the profiler container
+            # Execute cat command to read the JSON file
+            from kubernetes.stream import stream
+
+            exec_command = [
+                '/bin/sh',
+                '-c',
+                'cat /tracee-output/events.json 2>/dev/null || echo "{}"'
+            ]
+
+            try:
+                resp = stream(
+                    self.core_v1.connect_get_namespaced_pod_exec,
+                    name=pod_name,
+                    namespace=self.namespace,
+                    container='tracee-profiler',
+                    command=exec_command,
+                    stderr=True,
+                    stdin=False,
+                    stdout=True,
+                    tty=False,
+                    _preload_content=True
+                )
+
+                if resp:
+                    logger.info(f"Successfully retrieved Tracee data ({len(resp)} bytes)")
+                    return resp
+                else:
+                    logger.warning("Tracee output file is empty")
+                    return None
+
+            except ApiException as e:
+                if e.status == 404:
+                    logger.warning(f"Tracee profiler container not found in pod {pod_name}")
+                else:
+                    logger.error(f"Failed to exec into Tracee container: {e}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Failed to extract Tracee profiling data: {e}", exc_info=True)
             return None
 
     def extract_kubescape_analysis(

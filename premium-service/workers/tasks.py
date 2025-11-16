@@ -21,6 +21,8 @@ from .tasks_impl_kubescape import (
     wait_for_kubescape_analysis as _wait_for_kubescape_analysis,
     extract_kubescape_results as _extract_kubescape_results,
     process_kubescape_vex as _process_kubescape_vex,
+    convert_vex_statements_to_reachability as _convert_vex_to_reachability,
+    extract_sbom_component_data as _extract_sbom_component_data,
     generate_analysis_summary as _generate_analysis_summary,
     cleanup_workload as _cleanup_workload,
 )
@@ -165,13 +167,14 @@ def run_premium_analysis(self, job_id: str, image_ref: str, image_digest: str, c
         if not _wait_for_kubescape_analysis(deployment_name, analysis_duration):
             logger.warning("Kubescape analysis timeout, will attempt to extract results anyway")
 
-        # Phase 5: Extract Kubescape results
-        logger.info(f"[{job_id}] Phase 5: Extracting Kubescape results")
+        # Phase 5: Extract Kubescape results and Tracee profiling
+        logger.info(f"[{job_id}] Phase 5: Extracting Kubescape results and profiling data")
         _update_job_status(db, job, JobStatus.ANALYZING, 75, "Extracting results")
         kubescape_results = _extract_kubescape_results(
             deployment_name=deployment_name,
             image_digest=image_digest,
-            job_id=str(job.id)
+            job_id=str(job.id),
+            enable_profiling=config.get("enable_profiling", True)
         )
 
         if not kubescape_results.get("has_vex"):
@@ -202,23 +205,72 @@ def run_premium_analysis(self, job_id: str, image_ref: str, image_digest: str, c
         duration_seconds = int((analysis_end - analysis_start).total_seconds())
 
         # Save results to job
-        # Store reachability results as empty list (kubescape implementation doesn't generate individual CVE results)
-        job.reachability_results = []
+        # Convert VEX statements to reachability results
+        logger.info(f"[{job_id}] Converting VEX statements to reachability results")
+        job.reachability_results = _convert_vex_to_reachability(vex_document)
 
-        # Build execution profile with required fields
+        # Store VEX ID
+        job.generated_vex_id = kubescape_results.get("vex_id")
+        if job.generated_vex_id:
+            logger.info(f"[{job_id}] Generated VEX ID: {job.generated_vex_id}")
+
+        # Build execution profile with runtime data from multiple sources
+        tracee_profile = kubescape_results.get("tracee_profile") or {}
+        sbom_data = _extract_sbom_component_data(kubescape_results.get("filtered_sbom"))
+
+        # Merge files from Tracee and SBOM (Tracee = runtime access, SBOM = loaded components)
+        files_accessed = list(set(
+            tracee_profile.get("files_accessed", []) +
+            sbom_data.get("component_files", [])
+        ))
+
+        # Merge libraries from Tracee and SBOM
+        loaded_libraries = list(set(
+            tracee_profile.get("loaded_libraries", []) +
+            sbom_data.get("loaded_components", [])
+        ))
+
         job.execution_profile = {
             "sandbox_id": job.sandbox_id or "unknown",
-            "duration_seconds": duration_seconds,
-            "files_accessed": [],
-            "syscalls": [],
-            "network_connections": [],
-            "loaded_libraries": [],
+            "duration_seconds": tracee_profile.get("duration_seconds", duration_seconds),
+            "files_accessed": files_accessed,
+            "syscalls": tracee_profile.get("syscalls", []),
+            "network_connections": tracee_profile.get("network_connections", []),
+            "loaded_libraries": loaded_libraries,
+            "code_coverage_percent": tracee_profile.get("code_coverage_percent"),
             # Additional metadata (not in schema but useful for debugging)
-            "method": "kubescape_runtime",
+            "method": "hybrid_kubescape_tracee_sbom",
+            "data_sources": {
+                "tracee": tracee_profile is not None and len(tracee_profile) > 0,
+                "sbom": sbom_data.get("component_count", 0) > 0,
+                "kubescape_vex": len(vex_document.get("statements") or []) > 0
+            },
             "vex_statements": len(vex_document.get("statements") or []),
-            "filtered_components": len((kubescape_results.get("filtered_sbom") or {}).get("components") or []),
+            "filtered_components": sbom_data.get("component_count", 0),
+            "profiling_enabled": config.get("enable_profiling", True),
+            "profiling_success": kubescape_results.get("has_profiling", False),
             "summary": summary  # Store the summary here for reference
         }
+
+        # Log detailed profiling results
+        if tracee_profile:
+            logger.info(
+                f"[{job_id}] Tracee profiling: {len(tracee_profile.get('files_accessed', []))} files, "
+                f"{len(tracee_profile.get('syscalls', []))} unique syscalls, "
+                f"{len(tracee_profile.get('network_connections', []))} network connections"
+            )
+        else:
+            logger.warning(f"[{job_id}] No Tracee profiling data available")
+
+        logger.info(
+            f"[{job_id}] SBOM analysis: {sbom_data.get('component_count', 0)} loaded components, "
+            f"{len(sbom_data.get('component_files', []))} component file paths"
+        )
+
+        logger.info(
+            f"[{job_id}] Combined execution profile: {len(files_accessed)} total files, "
+            f"{len(loaded_libraries)} loaded libraries/components"
+        )
 
         # Store security findings from OWASP ZAP scan (if run)
         if zap_results:

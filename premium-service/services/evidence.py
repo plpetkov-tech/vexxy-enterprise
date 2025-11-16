@@ -3,13 +3,13 @@ Evidence Collection and Storage Service
 
 Manages collection, storage, and retrieval of analysis evidence.
 """
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from pathlib import Path
 import json
 import hashlib
 import logging
 from datetime import datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from config.settings import settings
 from models import SessionLocal, AnalysisEvidence, EvidenceType
@@ -147,14 +147,74 @@ class EvidenceStorage:
             description="OWASP ZAP fuzzing results"
         )
 
-    def store_vex_document(self, job_id: UUID, vex_document: Dict) -> str:
-        """Store VEX document from Kubescape"""
+    def store_profiling_data(self, job_id: UUID, profiling_data: Dict) -> str:
+        """Store raw profiling data (Tracee events)"""
         return self.store_evidence(
+            job_id=job_id,
+            evidence_type=EvidenceType.PROFILER_OUTPUT,
+            data=json.dumps(profiling_data, indent=2),
+            description="Runtime profiling data (Tracee/eBPF)"
+        )
+
+    def store_vex_document(self, job_id: UUID, vex_document: Dict) -> Tuple[str, UUID]:
+        """
+        Store VEX document from Kubescape and return storage path + VEX ID
+
+        Args:
+            job_id: Analysis job ID
+            vex_document: VEX document to store
+
+        Returns:
+            Tuple of (storage_path, vex_id)
+        """
+        # Generate unique VEX ID
+        vex_id = uuid4()
+
+        # Add VEX ID to document metadata if it has vexxy_metadata
+        if "vexxy_metadata" in vex_document:
+            vex_document["vexxy_metadata"]["vex_id"] = str(vex_id)
+
+        storage_path = self.store_evidence(
             job_id=job_id,
             evidence_type=EvidenceType.PROFILER_OUTPUT,  # Reuse existing type
             data=json.dumps(vex_document, indent=2),
-            description="Kubescape runtime VEX document"
+            description=f"Kubescape runtime VEX document (ID: {vex_id})"
         )
+
+        logger.info(f"Stored VEX document with ID {vex_id} at {storage_path}")
+        return storage_path, vex_id
+
+    def retrieve_vex_by_id(self, vex_id: UUID) -> Optional[Dict]:
+        """
+        Retrieve VEX document by its ID
+
+        Args:
+            vex_id: VEX document UUID
+
+        Returns:
+            VEX document dict, or None if not found
+        """
+        db = SessionLocal()
+        try:
+            # Find evidence record with VEX ID in description
+            evidence = db.query(AnalysisEvidence).filter(
+                AnalysisEvidence.description.like(f"%ID: {vex_id}%"),
+                AnalysisEvidence.evidence_type == EvidenceType.PROFILER_OUTPUT
+            ).first()
+
+            if not evidence:
+                logger.warning(f"No VEX document found with ID {vex_id}")
+                return None
+
+            # Read the file
+            vex_data = self.retrieve_evidence(evidence.storage_path)
+            return json.loads(vex_data)
+
+        except Exception as e:
+            logger.error(f"Failed to retrieve VEX document {vex_id}: {e}", exc_info=True)
+            return None
+        finally:
+            db.close()
 
     def store_filtered_sbom(self, job_id: UUID, filtered_sbom: Dict) -> str:
         """Store filtered SBOM from Kubescape"""

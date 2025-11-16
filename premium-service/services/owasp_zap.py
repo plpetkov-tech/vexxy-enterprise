@@ -11,6 +11,8 @@ import subprocess
 from typing import Dict, List, Optional
 from zapv2 import ZAPv2
 import requests
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 from utils.kubernetes_config import is_config_loaded, load_kubernetes_config
@@ -33,53 +35,132 @@ class ZAPService:
         Initialize ZAP service
 
         Args:
-            zap_host: ZAP proxy host
+            zap_host: ZAP proxy host (can be localhost, IP, or Kubernetes DNS name)
             zap_port: ZAP proxy port
             zap_api_key: ZAP API key (if authentication enabled)
         """
+        # Support Kubernetes service DNS names
+        # If running in cluster, prefer owasp-zap.security.svc.cluster.local
+        if zap_host == "localhost":
+            # Try cluster DNS first, fallback to localhost
+            try:
+                # Test if cluster DNS is reachable
+                import socket
+                socket.gethostbyname("owasp-zap.security.svc.cluster.local")
+                zap_host = "owasp-zap.security.svc.cluster.local"
+                logger.info("Using Kubernetes service DNS for ZAP connectivity")
+            except socket.gaierror:
+                logger.info("Kubernetes DNS not available, using localhost (requires port-forward)")
+
         self.zap_host = zap_host
         self.zap_port = zap_port
         self.zap_api_key = zap_api_key or "vexxy-zap-key"
         self.zap_url = f'http://{zap_host}:{zap_port}'
+
+        # Create requests session with retry logic
+        self.session = self._create_retry_session()
 
         # For ZAPv2 client (used for scans), we'll initialize it lazily when needed
         self._zap = None
 
         logger.info(f"ZAP service initialized at {zap_host}:{zap_port}")
 
+    def _create_retry_session(self, retries: int = 3, backoff_factor: float = 0.5) -> requests.Session:
+        """
+        Create requests session with automatic retry logic
+
+        Args:
+            retries: Maximum number of retries
+            backoff_factor: Backoff factor for exponential backoff
+
+        Returns:
+            Configured requests session
+        """
+        session = requests.Session()
+        retry_strategy = Retry(
+            total=retries,
+            backoff_factor=backoff_factor,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        return session
+
     @property
     def zap(self):
         """Lazy initialization of ZAPv2 client"""
         if self._zap is None:
-            self._zap = ZAPv2(apikey=self.zap_api_key)
-            # Override base URL for remote ZAP
-            self._zap.base = self.zap_url + '/'
+            # ZAPv2 client uses 'proxies' parameter to specify ZAP server location
+            proxies = {
+                'http': self.zap_url,
+                'https': self.zap_url
+            }
+            self._zap = ZAPv2(proxies=proxies, apikey=self.zap_api_key)
         return self._zap
 
-    def is_zap_available(self) -> bool:
+    def is_zap_available(self, max_retries: int = 3, retry_delay: float = 2.0) -> bool:
         """
-        Check if ZAP is running and accessible
+        Check if ZAP is running and accessible with retry logic
+
+        Args:
+            max_retries: Maximum number of connection attempts
+            retry_delay: Delay between retries in seconds
 
         Returns:
             True if ZAP is available, False otherwise
         """
-        try:
-            # Use direct HTTP request instead of ZAPv2 client to avoid URL validation issues
-            url = f"{self.zap_url}/JSON/core/view/version/"
-            params = {'apikey': self.zap_api_key}
-            response = requests.get(url, params=params, timeout=5)
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Use session with retry logic
+                url = f"{self.zap_url}/JSON/core/view/version/"
+                params = {'apikey': self.zap_api_key}
+                response = self.session.get(url, params=params, timeout=10)
 
-            if response.status_code == 200:
-                version_data = response.json()
-                version = version_data.get('version', 'unknown')
-                logger.info(f"ZAP is available, version: {version}")
-                return True
-            else:
-                logger.warning(f"ZAP returned status code {response.status_code}")
+                if response.status_code == 200:
+                    version_data = response.json()
+                    version = version_data.get('version', 'unknown')
+                    logger.info(f"ZAP is available, version: {version}")
+                    return True
+                else:
+                    logger.warning(f"ZAP returned status code {response.status_code}")
+                    if attempt < max_retries:
+                        logger.info(f"Retrying ZAP connectivity check (attempt {attempt + 1}/{max_retries})...")
+                        time.sleep(retry_delay)
+                        continue
+                    return False
+
+            except requests.exceptions.ConnectionError as e:
+                logger.warning(f"ZAP connection error (attempt {attempt}/{max_retries}): {e}")
+                if attempt < max_retries:
+                    logger.info(f"Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    continue
+                logger.error("ZAP is not reachable after all retry attempts")
+                logger.error(
+                    f"Ensure OWASP ZAP is running at {self.zap_url}. "
+                    "If running outside cluster, use: kubectl port-forward -n security svc/owasp-zap 8080:8080"
+                )
                 return False
-        except Exception as e:
-            logger.warning(f"ZAP is not available: {e}")
-            return False
+
+            except requests.exceptions.Timeout as e:
+                logger.warning(f"ZAP request timeout (attempt {attempt}/{max_retries}): {e}")
+                if attempt < max_retries:
+                    logger.info(f"Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    continue
+                logger.error("ZAP did not respond after all retry attempts")
+                return False
+
+            except Exception as e:
+                logger.error(f"Unexpected error checking ZAP availability (attempt {attempt}/{max_retries}): {e}", exc_info=True)
+                if attempt < max_retries:
+                    time.sleep(retry_delay)
+                    continue
+                return False
+
+        return False
 
     def scan_target(
         self,

@@ -581,6 +581,61 @@ async def list_analyses(
     }
 
 
+@app.get(
+    f"{settings.api_prefix}/vex/{{vex_id}}",
+    tags=["VEX Documents"]
+)
+async def get_vex_document(
+    vex_id: UUID,
+    request: Request
+):
+    """
+    Retrieve VEX document by ID
+
+    Returns the complete OpenVEX document in JSON format.
+    This allows users to export and share VEX documents for compliance.
+
+    **Format**: OpenVEX v0.2.0 compliant
+    """
+    correlation_id = getattr(request.state, "correlation_id", None)
+    logger.info(
+        f"VEX document request for {vex_id}",
+        extra={"correlation_id": correlation_id, "vex_id": str(vex_id)}
+    )
+
+    try:
+        from services import EvidenceStorage
+
+        evidence_storage = EvidenceStorage()
+        vex_document = evidence_storage.retrieve_vex_by_id(vex_id)
+
+        if not vex_document:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"VEX document with ID {vex_id} not found"
+            )
+
+        logger.info(
+            f"Retrieved VEX document {vex_id}",
+            extra={"correlation_id": correlation_id, "vex_id": str(vex_id)}
+        )
+
+        return vex_document
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Failed to retrieve VEX document {vex_id}: {e}",
+            extra={"correlation_id": correlation_id, "vex_id": str(vex_id), "error": str(e)},
+            exc_info=True
+        )
+        raise InternalServiceError(
+            message=f"Failed to retrieve VEX document: {str(e)}",
+            service="evidence_storage"
+        )
+
+
 # Run with uvicorn
 if __name__ == "__main__":
     import uvicorn
