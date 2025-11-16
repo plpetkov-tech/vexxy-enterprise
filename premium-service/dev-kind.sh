@@ -102,6 +102,168 @@ EOF
     print_success "Cluster created"
 }
 
+install_infrastructure() {
+    print_header "Installing Infrastructure (Kubescape + OWASP ZAP)"
+
+    # Install Kubescape via Helm (idempotent)
+    print_info "Installing Kubescape..."
+
+    # Check if Helm is installed
+    if ! command -v helm &> /dev/null; then
+        print_error "Helm is not installed (https://helm.sh/docs/intro/install/)"
+        return 1
+    fi
+
+    # Add Kubescape Helm repo (force update if exists)
+    helm repo add kubescape https://kubescape.github.io/helm-charts --force-update 2>/dev/null || true
+    helm repo update 2>/dev/null || true
+
+    # Check if Kubescape is already installed
+    if helm list -n kubescape 2>/dev/null | grep -q kubescape; then
+        print_info "Kubescape is already installed, skipping..."
+    else
+        print_info "Installing Kubescape operator (this may take a few minutes)..."
+
+        # Create Helm values for Kubescape
+        cat > /tmp/kubescape-values.yaml <<EOF
+capabilities:
+  vexGeneration: enable
+  vulnerabilityScan: enable
+  relevancy: enable
+  runtimeObservability: enable
+  networkEventsStreaming: disable
+
+nodeAgent:
+  enabled: true
+  config:
+    applicationActivityTime: 5m
+    learningPeriod: 5m
+    maxLearningPeriod: 5m
+    updatePeriod: 1m
+
+kubevuln:
+  enabled: true
+  config:
+    storeFilteredSbom: true
+
+storage:
+  enabled: true
+
+grypeOfflineDB:
+  enabled: true
+EOF
+
+        # Install Kubescape (idempotent with upgrade --install)
+        helm upgrade --install kubescape kubescape/kubescape-operator \
+            -n kubescape \
+            --create-namespace \
+            -f /tmp/kubescape-values.yaml \
+            --wait \
+            --timeout 5m
+
+        rm -f /tmp/kubescape-values.yaml
+        print_success "Kubescape installed"
+    fi
+
+    # Install OWASP ZAP (idempotent)
+    print_info "Installing OWASP ZAP..."
+
+    # Create security namespace if it doesn't exist
+    kubectl create namespace security 2>/dev/null || true
+
+    # Check if ZAP is already deployed
+    if kubectl get deployment owasp-zap -n security &>/dev/null; then
+        print_info "OWASP ZAP is already installed, skipping..."
+    else
+        print_info "Deploying OWASP ZAP..."
+
+        # Create ZAP deployment and service
+        cat <<EOF | kubectl apply -f -
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: owasp-zap
+  namespace: security
+  labels:
+    app: owasp-zap
+    vexxy.dev/component: security
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: owasp-zap
+  template:
+    metadata:
+      labels:
+        app: owasp-zap
+    spec:
+      containers:
+      - name: zap
+        image: ghcr.io/zaproxy/zaproxy:stable
+        command: ["zap.sh"]
+        args:
+          - "-daemon"
+          - "-host"
+          - "0.0.0.0"
+          - "-port"
+          - "8080"
+          - "-config"
+          - "api.disablekey=true"
+          - "-config"
+          - "api.addrs.addr.name=.*"
+          - "-config"
+          - "api.addrs.addr.regex=true"
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 2
+            memory: 2Gi
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: owasp-zap
+  namespace: security
+  labels:
+    app: owasp-zap
+    vexxy.dev/component: security
+spec:
+  type: ClusterIP
+  selector:
+    app: owasp-zap
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+EOF
+
+        print_info "Waiting for ZAP to be ready..."
+        kubectl wait --for=condition=ready pod -l app=owasp-zap -n security --timeout=120s || true
+        print_success "OWASP ZAP installed"
+    fi
+
+    print_success "Infrastructure installation complete"
+}
+
 build_image() {
     print_header "Building Docker Image"
 
@@ -229,6 +391,7 @@ start() {
         create_cluster
     fi
 
+    install_infrastructure
     build_image
     deploy_services
     show_status
