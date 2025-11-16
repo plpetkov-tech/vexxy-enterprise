@@ -42,13 +42,12 @@ class ZAPService:
         self.zap_api_key = zap_api_key or "vexxy-zap-key"
 
         # Initialize ZAP API client
-        self.zap = ZAPv2(
-            apikey=self.zap_api_key,
-            proxies={
-                'http': f'http://{zap_host}:{zap_port}',
-                'https': f'http://{zap_host}:{zap_port}'
-            }
-        )
+        # Note: ZAPv2 has a hardcoded base='http://zap/' which doesn't work for remote ZAP
+        # We need to override it with the actual ZAP host
+        self.zap = ZAPv2(apikey=self.zap_api_key)
+
+        # Override the base URL to point to actual ZAP instance
+        self.zap.base = f'http://{zap_host}:{zap_port}/'
 
         logger.info(f"ZAP service initialized at {zap_host}:{zap_port}")
 
