@@ -9,7 +9,6 @@ import time
 import json
 import subprocess
 from typing import Dict, List, Optional
-from zapv2 import ZAPv2
 import requests
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
@@ -60,9 +59,6 @@ class ZAPService:
         # Create requests session with retry logic
         self.session = self._create_retry_session()
 
-        # For ZAPv2 client (used for scans), we'll initialize it lazily when needed
-        self._zap = None
-
         logger.info(f"ZAP service initialized at {zap_host}:{zap_port}")
 
     def _create_retry_session(self, retries: int = 3, backoff_factor: float = 0.5) -> requests.Session:
@@ -88,17 +84,33 @@ class ZAPService:
         session.mount("https://", adapter)
         return session
 
-    @property
-    def zap(self):
-        """Lazy initialization of ZAPv2 client"""
-        if self._zap is None:
-            # ZAPv2 client uses 'proxies' parameter to specify ZAP server location
-            proxies = {
-                'http': self.zap_url,
-                'https': self.zap_url
-            }
-            self._zap = ZAPv2(proxies=proxies, apikey=self.zap_api_key)
-        return self._zap
+    def _call_zap_api(self, component: str, api_type: str, action: str, params: Dict = None) -> Dict:
+        """
+        Call ZAP REST API directly
+
+        Args:
+            component: API component (e.g., 'core', 'spider', 'ascan')
+            api_type: API type ('view' or 'action')
+            action: API action name
+            params: Additional parameters
+
+        Returns:
+            API response as dictionary
+        """
+        if params is None:
+            params = {}
+
+        # Add API key
+        params['apikey'] = self.zap_api_key
+
+        # Build URL
+        url = f"{self.zap_url}/JSON/{component}/{api_type}/{action}/"
+
+        # Make request
+        response = self.session.get(url, params=params, timeout=30)
+        response.raise_for_status()
+
+        return response.json()
 
     def is_zap_available(self, max_retries: int = 3, retry_delay: float = 2.0) -> bool:
         """
@@ -218,7 +230,7 @@ class ZAPService:
                 return results
 
             # Create new session
-            self.zap.core.new_session()
+            self._call_zap_api('core', 'action', 'newSession')
             logger.info("Created new ZAP session")
 
             # Scan each port
@@ -233,7 +245,7 @@ class ZAPService:
 
                     # Access the URL to add to ZAP's sites
                     try:
-                        self.zap.urlopen(target_url)
+                        self._call_zap_api('core', 'action', 'accessUrl', {'url': target_url})
                         logger.info(f"Accessed {target_url}")
                     except Exception as e:
                         logger.warning(f"Could not access {target_url}: {e}")
@@ -242,13 +254,18 @@ class ZAPService:
                     # Spider the target (discover pages)
                     if scan_depth in ["medium", "thorough"]:
                         logger.info(f"Spidering {target_url}")
-                        scan_id = self.zap.spider.scan(target_url)
+                        spider_response = self._call_zap_api('spider', 'action', 'scan', {'url': target_url})
+                        scan_id = spider_response.get('scan')
 
                         # Wait for spider to complete (with timeout)
                         spider_timeout = 120 if scan_depth == "medium" else 300
                         spider_start = time.time()
 
-                        while int(self.zap.spider.status(scan_id)) < 100:
+                        while True:
+                            status_response = self._call_zap_api('spider', 'view', 'status', {'scanId': scan_id})
+                            status = int(status_response.get('status', 0))
+                            if status >= 100:
+                                break
                             if time.time() - spider_start > spider_timeout:
                                 logger.warning(f"Spider timeout for {target_url}")
                                 break
@@ -258,20 +275,24 @@ class ZAPService:
 
                     # Active scan
                     logger.info(f"Starting active scan on {target_url}")
-                    scan_id = self.zap.ascan.scan(target_url)
+                    ascan_response = self._call_zap_api('ascan', 'action', 'scan', {'url': target_url})
+                    scan_id = ascan_response.get('scan')
 
                     # Wait for active scan to complete (with timeout)
                     scan_timeout = 180 if scan_depth == "quick" else 300 if scan_depth == "medium" else 600
                     scan_start = time.time()
 
-                    while int(self.zap.ascan.status(scan_id)) < 100:
+                    while True:
+                        status_response = self._call_zap_api('ascan', 'view', 'status', {'scanId': scan_id})
+                        status = int(status_response.get('status', 0))
+                        if status >= 100:
+                            break
                         if time.time() - scan_start > scan_timeout:
                             logger.warning(f"Active scan timeout for {target_url}")
-                            self.zap.ascan.stop(scan_id)
+                            self._call_zap_api('ascan', 'action', 'stop', {'scanId': scan_id})
                             break
 
-                        progress = int(self.zap.ascan.status(scan_id))
-                        logger.debug(f"Active scan progress: {progress}%")
+                        logger.debug(f"Active scan progress: {status}%")
                         time.sleep(5)
 
                     logger.info(f"Active scan completed for {target_url}")
@@ -281,7 +302,8 @@ class ZAPService:
                     continue
 
             # Get all alerts
-            alerts = self.zap.core.alerts()
+            alerts_response = self._call_zap_api('core', 'view', 'alerts')
+            alerts = alerts_response.get('alerts', [])
             logger.info(f"Retrieved {len(alerts)} alerts from ZAP")
 
             # Process alerts
