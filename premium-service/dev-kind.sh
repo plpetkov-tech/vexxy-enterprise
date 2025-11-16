@@ -256,6 +256,37 @@ restart() {
     print_success "Services restarted"
 }
 
+update() {
+    print_header "Updating Manifests"
+
+    print_info "Applying Kubernetes manifests..."
+    kubectl apply -k k8s/
+
+    print_info "Restarting deployments to pick up changes..."
+    kubectl rollout restart deployment -n "$NAMESPACE"
+
+    print_success "Manifests updated"
+}
+
+debug() {
+    print_header "Debug Information"
+
+    echo "=== API Pod Status ==="
+    kubectl get pods -n "$NAMESPACE" -l app=premium-api
+
+    echo ""
+    echo "=== Recent API Logs ==="
+    kubectl logs -n "$NAMESPACE" -l app=premium-api --tail=50 --all-containers || true
+
+    echo ""
+    echo "=== API Pod Events ==="
+    kubectl get events -n "$NAMESPACE" --field-selector involvedObject.kind=Pod --sort-by='.lastTimestamp' | grep premium-api | tail -10
+
+    echo ""
+    echo "=== ServiceAccount Permissions ==="
+    kubectl auth can-i --list --as=system:serviceaccount:vexxy-premium:premium-service -n kubescape | head -20
+}
+
 test() {
     print_header "Running Tests"
 
@@ -324,11 +355,13 @@ Usage: $0 <command>
 Commands:
     start       Create cluster and deploy all services
     stop        Delete services (keeps cluster)
-    restart     Rebuild and restart services
+    restart     Rebuild image and restart services
+    update      Apply manifest changes without rebuilding
     destroy     Delete entire kind cluster
 
     status      Show pod and service status
     logs        Show logs (specify: api, worker, postgres, redis, flower)
+    debug       Show debug info (pod status, logs, events, RBAC)
     test        Run health checks
 
     shell       Open shell in pod (specify: api, worker, postgres, redis)
@@ -336,6 +369,8 @@ Commands:
 
 Examples:
     $0 start                 # Deploy everything
+    $0 update                # Apply RBAC/config changes
+    $0 debug                 # Debug API issues
     $0 logs api              # View API logs
     $0 shell worker          # Shell in worker pod
     $0 test                  # Run health checks
@@ -359,9 +394,11 @@ main() {
         start) start ;;
         stop) cleanup ;;
         restart) restart ;;
+        update) update ;;
         destroy) destroy ;;
         status) show_status ;;
         logs) show_logs "${2}" ;;
+        debug) debug ;;
         test) test ;;
         shell) shell "${2}" ;;
         psql) psql ;;

@@ -25,11 +25,18 @@ rules:
 - apiGroups: [""]
   resources: ["namespaces"]
   verbs: ["get", "list", "create"]
-# Access ZAP in security namespace
+# Access to secrets (needed for Kubescape Helm installation)
 - apiGroups: [""]
-  resources: ["pods", "services", "deployments"]
-  verbs: ["get", "list"]
-  resourceNames: ["owasp-zap"]
+  resources: ["secrets"]
+  verbs: ["get", "list", "watch"]
+# Access ZAP and Kubescape deployments in their namespaces
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch"]
+# Access to ConfigMaps (for Kubescape)
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
