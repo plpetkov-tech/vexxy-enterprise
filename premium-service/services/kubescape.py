@@ -191,28 +191,41 @@ class KubescapeService:
                 raise
 
             # Check for Kubescape CRDs (optional check - warn if missing but don't fail)
-            api_client = client.ApiClient()
-            api_instance = client.ApiextensionsV1Api(api_client)
+            # Note: This requires permissions to list CRDs at cluster scope
+            try:
+                api_client = client.ApiClient()
+                api_instance = client.ApiextensionsV1Api(api_client)
 
-            required_crds = [
-                "openvulnerabilityexchangecontainers.spdx.softwarecomposition.kubescape.io",
-                "sbomsyftfiltereds.spdx.softwarecomposition.kubescape.io"
-            ]
+                required_crds = [
+                    "openvulnerabilityexchangecontainers.spdx.softwarecomposition.kubescape.io",
+                    "sbomsyftfiltereds.spdx.softwarecomposition.kubescape.io"
+                ]
 
-            crds = api_instance.list_custom_resource_definition()
-            crd_names = [crd.metadata.name for crd in crds.items]
+                crds = api_instance.list_custom_resource_definition()
+                crd_names = [crd.metadata.name for crd in crds.items]
 
-            missing_crds = [crd for crd in required_crds if crd not in crd_names]
+                missing_crds = [crd for crd in required_crds if crd not in crd_names]
 
-            if missing_crds:
-                logger.warning(
-                    f"Kubescape CRDs not yet registered (may still be initializing): {missing_crds}. "
-                    f"This is normal during startup."
-                )
-                # Don't return False here - deployment exists, so Kubescape is installed
-                # CRDs will be registered shortly
-            else:
-                logger.info("All required Kubescape CRDs found")
+                if missing_crds:
+                    logger.warning(
+                        f"Kubescape CRDs not yet registered (may still be initializing): {missing_crds}. "
+                        f"This is normal during startup."
+                    )
+                    # Don't return False here - deployment exists, so Kubescape is installed
+                    # CRDs will be registered shortly
+                else:
+                    logger.info("All required Kubescape CRDs found")
+            except ApiException as crd_error:
+                # If we don't have permissions to list CRDs (403), that's OK
+                # The deployment check is sufficient
+                if crd_error.status == 403:
+                    logger.info(
+                        "Skipping CRD check (no permissions to list CRDs at cluster scope). "
+                        "Kubescape deployment exists, so considering it installed."
+                    )
+                else:
+                    # Log other API errors but don't fail
+                    logger.warning(f"Could not check CRDs: {crd_error.status} - {crd_error.reason}")
 
             # If we got here, namespace and deployment exist
             return True
