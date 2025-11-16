@@ -119,6 +119,7 @@ def run_premium_analysis(self, job_id: str, image_ref: str, image_digest: str, c
             raise RuntimeError("Workload failed to become ready")
 
         # Phase 3.5: Create Service and run OWASP ZAP scan (if ports specified)
+        zap_results = None  # Initialize to track ZAP scan results
         ports = config.get("ports", [])
         if ports:
             logger.info(f"[{job_id}] Phase 3.5: Creating service for ports {ports}")
@@ -195,14 +196,50 @@ def run_premium_analysis(self, job_id: str, image_ref: str, image_digest: str, c
             filtered_sbom=kubescape_results.get("filtered_sbom")
         )
 
+        # Calculate analysis duration
+        analysis_start = job.started_at or job.created_at
+        analysis_end = datetime.utcnow()
+        duration_seconds = int((analysis_end - analysis_start).total_seconds())
+
         # Save results to job
-        job.reachability_results = summary
-        # Handle case where statements/components fields are null (Go nil slice marshals to JSON null)
+        # Store reachability results as empty list (kubescape implementation doesn't generate individual CVE results)
+        job.reachability_results = []
+
+        # Build execution profile with required fields
         job.execution_profile = {
+            "sandbox_id": job.sandbox_id or "unknown",
+            "duration_seconds": duration_seconds,
+            "files_accessed": [],
+            "syscalls": [],
+            "network_connections": [],
+            "loaded_libraries": [],
+            # Additional metadata (not in schema but useful for debugging)
             "method": "kubescape_runtime",
             "vex_statements": len(vex_document.get("statements") or []),
-            "filtered_components": len((kubescape_results.get("filtered_sbom") or {}).get("components") or [])
+            "filtered_components": len((kubescape_results.get("filtered_sbom") or {}).get("components") or []),
+            "summary": summary  # Store the summary here for reference
         }
+
+        # Store security findings from OWASP ZAP scan (if run)
+        if zap_results:
+            job.security_findings = {
+                "scan_type": "owasp_zap",
+                "status": zap_results.get("status", "unknown"),
+                "scan_duration_seconds": zap_results.get("scan_duration_seconds"),
+                "target_urls": zap_results.get("scanned_urls", []),
+                "total_alerts": zap_results.get("summary", {}).get("total_alerts", 0),
+                "high_risk": zap_results.get("summary", {}).get("high_risk", 0),
+                "medium_risk": zap_results.get("summary", {}).get("medium_risk", 0),
+                "low_risk": zap_results.get("summary", {}).get("low_risk", 0),
+                "informational": zap_results.get("summary", {}).get("informational", 0),
+                "alerts": zap_results.get("alerts", []),  # Detailed findings
+                "scan_timestamp": datetime.utcnow().isoformat(),
+                "error_message": zap_results.get("error") if zap_results.get("status") == "failed" else None
+            }
+            logger.info(f"[{job_id}] Stored security findings: {job.security_findings.get('total_alerts')} alerts")
+        else:
+            logger.info(f"[{job_id}] No security scan results to store")
+
         db.commit()
 
         # Complete

@@ -125,88 +125,61 @@ async def startup_event():
         # Don't exit - allow app to start but health check will fail
         # This enables graceful degradation and better visibility
 
-    # Install Kubescape on startup (one-time setup)
+    # Verify Kubescape availability (should be pre-installed via dev-kind.sh)
     try:
         from services import KubescapeService
-        logger.info("Checking Kubescape installation...", extra={"event": "kubescape_init_start"})
+        logger.info("Checking Kubescape availability...", extra={"event": "kubescape_check_start"})
 
         kubescape_service = KubescapeService()
         if kubescape_service.is_kubescape_installed():
-            logger.info("Kubescape is already installed", extra={"event": "kubescape_already_installed"})
+            logger.info("Kubescape is available", extra={"event": "kubescape_available"})
         else:
-            logger.info("Kubescape not found, installing...", extra={"event": "kubescape_installing"})
-            success = kubescape_service.install_kubescape()
-
-            if success:
-                logger.info("Kubescape installed successfully", extra={"event": "kubescape_install_success"})
-            else:
-                logger.error("Kubescape installation failed", extra={"event": "kubescape_install_failed"})
-                # Don't exit - allow app to start but analysis tasks will fail
+            logger.warning(
+                "Kubescape is not available - ensure it is installed in the cluster (run: ./dev-kind.sh start)",
+                extra={"event": "kubescape_not_available"}
+            )
     except Exception as e:
-        logger.error(
-            f"Kubescape initialization failed: {e}",
+        logger.warning(
+            f"Kubescape availability check failed: {e}",
             extra={
-                "event": "kubescape_init_failed",
+                "event": "kubescape_check_failed",
                 "error": str(e),
                 "error_type": type(e).__name__
-            },
-            exc_info=True
+            }
         )
-        # Don't exit - allow app to start but analysis tasks will fail
 
-    # Install OWASP ZAP on startup (one-time setup)
-    # Note: ZAP runs without API key authentication (api.disablekey=true)
-    # API key can be configured via settings.zap_api_key when needed for production
+    # Verify OWASP ZAP availability (should be pre-installed via dev-kind.sh)
     try:
         from services import ZAPService
-        logger.info("Checking OWASP ZAP installation...", extra={"event": "zap_init_start"})
-
-        # Check if ZAP is installed in the cluster
-        zap_namespace = getattr(settings, 'zap_namespace', 'security')
-
-        if ZAPService.is_zap_installed(namespace=zap_namespace):
-            logger.info("OWASP ZAP is already installed", extra={"event": "zap_already_installed"})
-        else:
-            logger.info("OWASP ZAP not found, installing...", extra={"event": "zap_installing"})
-            success = ZAPService.install_zap(namespace=zap_namespace)
-
-            if success:
-                logger.info("OWASP ZAP installed successfully", extra={"event": "zap_install_success"})
-            else:
-                logger.error("OWASP ZAP installation failed", extra={"event": "zap_install_failed"})
-                # Don't exit - allow app to start but security scanning will be skipped
+        logger.info("Checking OWASP ZAP availability...", extra={"event": "zap_check_start"})
 
         # Verify ZAP is accessible
-        zap_host = getattr(settings, 'zap_host', f'owasp-zap.{zap_namespace}.svc.cluster.local')
         zap_service = ZAPService(
-            zap_host=zap_host,
-            zap_port=getattr(settings, 'zap_port', 8080),
-            zap_api_key=None  # No API key - ZAP runs with api.disablekey=true
+            zap_host=settings.zap_host,
+            zap_port=settings.zap_port,
+            zap_api_key=settings.zap_api_key
         )
 
         if zap_service.is_zap_available():
             logger.info(
                 "OWASP ZAP is available and ready for security scanning",
-                extra={"event": "zap_available", "zap_host": zap_host}
+                extra={"event": "zap_available", "zap_host": settings.zap_host}
             )
         else:
             logger.warning(
-                "OWASP ZAP is not yet available - it may still be starting up",
-                extra={"event": "zap_not_available", "zap_host": zap_host}
+                "OWASP ZAP is not available - ensure it is installed in the cluster (run: ./dev-kind.sh start)",
+                extra={"event": "zap_not_available", "zap_host": settings.zap_host}
             )
-            # Don't fail startup - ZAP may still be starting
 
     except Exception as e:
-        logger.error(
-            f"OWASP ZAP initialization failed: {e}",
+        logger.warning(
+            f"OWASP ZAP availability check failed: {e}",
             extra={
-                "event": "zap_init_failed",
+                "event": "zap_check_failed",
                 "error": str(e),
                 "error_type": type(e).__name__
-            },
-            exc_info=True
+            }
         )
-        # Don't exit - allow app to start but security scanning will be skipped
 
 
 # Shutdown event
@@ -492,6 +465,7 @@ async def get_analysis_results(
             image_digest=job.image_digest,
             execution_profile=job.execution_profile,
             reachability_results=job.reachability_results or [],
+            security_findings=job.security_findings,
             generated_vex_id=job.generated_vex_id,
             created_at=job.created_at,
             completed_at=job.completed_at

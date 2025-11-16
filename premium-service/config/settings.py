@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     vexxy_backend_url: str = "http://localhost:8000"
     vexxy_api_key: Optional[str] = None
 
+    # OWASP ZAP Integration
+    zap_host: str = "localhost"  # Use localhost with port-forward, or K8s service DNS if in-cluster
+    zap_port: int = 8080
+    zap_namespace: str = "security"
+    zap_api_key: Optional[str] = "vexxy-zap-key"
+
     # Monitoring
     enable_metrics: bool = True
     metrics_port: int = 9090

@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: premium-config
+  namespace: vexxy-premium
+data:
+  DATABASE_URL: "postgresql://vexxy:vexxy@postgres.vexxy-premium.svc.cluster.local:5432/vexxy_premium"
+  REDIS_URL: "redis://redis.vexxy-premium.svc.cluster.local:6379/0"
+  CELERY_BROKER_URL: "redis://redis.vexxy-premium.svc.cluster.local:6379/0"
+  CELERY_RESULT_BACKEND: "redis://redis.vexxy-premium.svc.cluster.local:6379/0"
+  ENVIRONMENT: "development"
+  LOG_LEVEL: "INFO"
+  K8S_IN_CLUSTER: "true"
+  K8S_SANDBOX_NAMESPACE: "vexxy-sandbox"
+  # OWASP ZAP - now uses K8s service DNS directly!
+  ZAP_HOST: "owasp-zap.security.svc.cluster.local"
+  ZAP_PORT: "8080"
+  ZAP_NAMESPACE: "security"
+  ZAP_API_KEY: "vexxy-zap-key"

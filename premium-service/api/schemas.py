@@ -123,6 +123,8 @@ class ExecutionProfile(BaseModel):
     loaded_libraries: List[str] = Field(default_factory=list)
     code_coverage_percent: Optional[float] = None
 
+    model_config = {"extra": "ignore"}  # Allow extra fields for metadata
+
 
 class ReachabilityResult(BaseModel):
     """Reachability analysis result for a CVE"""
@@ -135,6 +137,45 @@ class ReachabilityResult(BaseModel):
     executed_files: List[str] = Field(default_factory=list)
 
 
+class SecurityAlert(BaseModel):
+    """Security alert from OWASP ZAP or similar scanners"""
+    alert_id: str
+    name: str
+    risk: str  # High, Medium, Low, Informational
+    confidence: str  # High, Medium, Low
+    description: str
+    url: Optional[str] = None
+    method: Optional[str] = None
+    param: Optional[str] = None
+    solution: Optional[str] = None
+    reference: Optional[str] = None
+    cwe_id: Optional[int] = None
+    wasc_id: Optional[int] = None
+
+
+class SecurityFindings(BaseModel):
+    """Security scan findings from OWASP ZAP and other tools"""
+    scan_type: str = Field(default="owasp_zap", description="Type of security scan performed")
+    status: str = Field(description="Scan status: completed, failed, skipped")
+    scan_duration_seconds: Optional[int] = None
+    target_urls: List[str] = Field(default_factory=list, description="URLs that were scanned")
+
+    # Summary statistics
+    total_alerts: int = Field(default=0)
+    high_risk: int = Field(default=0)
+    medium_risk: int = Field(default=0)
+    low_risk: int = Field(default=0)
+    informational: int = Field(default=0)
+
+    # Detailed alerts (optional, can be large)
+    alerts: List[SecurityAlert] = Field(default_factory=list, description="Detailed security alerts")
+
+    # Additional metadata
+    scan_timestamp: Optional[datetime] = None
+    scanner_version: Optional[str] = None
+    error_message: Optional[str] = None
+
+
 class AnalysisResults(BaseModel):
     """Complete analysis results"""
     job_id: UUID
@@ -143,6 +184,7 @@ class AnalysisResults(BaseModel):
     image_digest: str
     execution_profile: Optional[ExecutionProfile] = None
     reachability_results: List[ReachabilityResult] = Field(default_factory=list)
+    security_findings: Optional[SecurityFindings] = None
     generated_vex_id: Optional[UUID] = None
     created_at: datetime
     completed_at: Optional[datetime] = None

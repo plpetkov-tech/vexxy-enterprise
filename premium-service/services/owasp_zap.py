@@ -40,17 +40,21 @@ class ZAPService:
         self.zap_host = zap_host
         self.zap_port = zap_port
         self.zap_api_key = zap_api_key or "vexxy-zap-key"
+        self.zap_url = f'http://{zap_host}:{zap_port}'
 
-        # Initialize ZAP API client
-        self.zap = ZAPv2(
-            apikey=self.zap_api_key,
-            proxies={
-                'http': f'http://{zap_host}:{zap_port}',
-                'https': f'http://{zap_host}:{zap_port}'
-            }
-        )
+        # For ZAPv2 client (used for scans), we'll initialize it lazily when needed
+        self._zap = None
 
         logger.info(f"ZAP service initialized at {zap_host}:{zap_port}")
+
+    @property
+    def zap(self):
+        """Lazy initialization of ZAPv2 client"""
+        if self._zap is None:
+            self._zap = ZAPv2(apikey=self.zap_api_key)
+            # Override base URL for remote ZAP
+            self._zap.base = self.zap_url + '/'
+        return self._zap
 
     def is_zap_available(self) -> bool:
         """
@@ -60,10 +64,19 @@ class ZAPService:
             True if ZAP is available, False otherwise
         """
         try:
-            # Try to get ZAP version
-            version = self.zap.core.version
-            logger.info(f"ZAP is available, version: {version}")
-            return True
+            # Use direct HTTP request instead of ZAPv2 client to avoid URL validation issues
+            url = f"{self.zap_url}/JSON/core/view/version/"
+            params = {'apikey': self.zap_api_key}
+            response = requests.get(url, params=params, timeout=5)
+
+            if response.status_code == 200:
+                version_data = response.json()
+                version = version_data.get('version', 'unknown')
+                logger.info(f"ZAP is available, version: {version}")
+                return True
+            else:
+                logger.warning(f"ZAP returned status code {response.status_code}")
+                return False
         except Exception as e:
             logger.warning(f"ZAP is not available: {e}")
             return False

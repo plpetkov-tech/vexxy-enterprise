@@ -1,0 +1,56 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: premium-service
+  namespace: vexxy-premium
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: premium-service-role
+rules:
+# Manage analysis workloads in sandbox namespace
+- apiGroups: [""]
+  resources: ["pods", "services"]
+  verbs: ["get", "list", "create", "delete", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "create", "delete", "watch", "patch"]
+# Access Kubescape resources
+- apiGroups: ["spdx.softwarecomposition.kubescape.io"]
+  resources: ["*"]
+  verbs: ["get", "list", "watch"]
+# Manage namespaces (for auto-creating sandbox)
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "create"]
+# Access to secrets (needed for Kubescape Helm installation)
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "watch"]
+# Access ZAP and Kubescape deployments in their namespaces
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch"]
+# Access to ConfigMaps (for Kubescape)
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
+# Access to CRDs (for checking Kubescape installation)
+- apiGroups: ["apiextensions.k8s.io"]
+  resources: ["customresourcedefinitions"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: premium-service-binding
+subjects:
+- kind: ServiceAccount
+  name: premium-service
+  namespace: vexxy-premium
+roleRef:
+  kind: ClusterRole
+  name: premium-service-role
+  apiGroup: rbac.authorization.k8s.io
