@@ -158,14 +158,14 @@ class EvidenceStorage:
 
     def store_vex_document(self, job_id: UUID, vex_document: Dict) -> Tuple[str, UUID]:
         """
-        Store VEX document from Kubescape and return storage path + VEX ID
+        Store VEX document in database and return reference + VEX ID
 
         Args:
             job_id: Analysis job ID
             vex_document: VEX document to store
 
         Returns:
-            Tuple of (storage_path, vex_id)
+            Tuple of (db_reference, vex_id)
         """
         # Generate unique VEX ID
         vex_id = uuid4()
@@ -174,19 +174,32 @@ class EvidenceStorage:
         if "vexxy_metadata" in vex_document:
             vex_document["vexxy_metadata"]["vex_id"] = str(vex_id)
 
-        storage_path = self.store_evidence(
-            job_id=job_id,
-            evidence_type=EvidenceType.PROFILER_OUTPUT,  # Reuse existing type
-            data=json.dumps(vex_document, indent=2),
-            description=f"Kubescape runtime VEX document (ID: {vex_id})"
-        )
+        # Store directly in database as JSONB
+        db = SessionLocal()
+        try:
+            evidence = AnalysisEvidence(
+                analysis_job_id=job_id,
+                evidence_type=EvidenceType.PROFILER_OUTPUT,
+                vex_document_data=vex_document,  # Store in JSONB column
+                description=f"Kubescape runtime VEX document (ID: {vex_id})"
+            )
+            db.add(evidence)
+            db.commit()
+            db.refresh(evidence)
 
-        logger.info(f"Stored VEX document with ID {vex_id} at {storage_path}")
-        return storage_path, vex_id
+            logger.info(f"Stored VEX document with ID {vex_id} in database (evidence ID: {evidence.id})")
+            return f"db://vex/{vex_id}", vex_id
+
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to store VEX document: {e}", exc_info=True)
+            raise
+        finally:
+            db.close()
 
     def retrieve_vex_by_id(self, vex_id: UUID) -> Optional[Dict]:
         """
-        Retrieve VEX document by its ID
+        Retrieve VEX document by its ID from database
 
         Args:
             vex_id: VEX document UUID
@@ -196,19 +209,19 @@ class EvidenceStorage:
         """
         db = SessionLocal()
         try:
-            # Find evidence record with VEX ID in description
+            # Find evidence record with VEX ID in description and JSONB data
             evidence = db.query(AnalysisEvidence).filter(
                 AnalysisEvidence.description.like(f"%ID: {vex_id}%"),
-                AnalysisEvidence.evidence_type == EvidenceType.PROFILER_OUTPUT
+                AnalysisEvidence.evidence_type == EvidenceType.PROFILER_OUTPUT,
+                AnalysisEvidence.vex_document_data.isnot(None)
             ).first()
 
             if not evidence:
                 logger.warning(f"No VEX document found with ID {vex_id}")
                 return None
 
-            # Read the file
-            vex_data = self.retrieve_evidence(evidence.storage_path)
-            return json.loads(vex_data)
+            # Return JSONB data directly
+            return evidence.vex_document_data
 
         except Exception as e:
             logger.error(f"Failed to retrieve VEX document {vex_id}: {e}", exc_info=True)

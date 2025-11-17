@@ -309,7 +309,8 @@ class ZAPService:
             # Process alerts
             for alert in alerts:
                 processed_alert = {
-                    "alert": alert.get("alert", "Unknown"),
+                    "alert_id": alert.get("pluginid", alert.get("id", "0")),
+                    "name": alert.get("alert", "Unknown"),
                     "risk": alert.get("risk", "Informational"),
                     "confidence": alert.get("confidence", "Medium"),
                     "url": alert.get("url", ""),

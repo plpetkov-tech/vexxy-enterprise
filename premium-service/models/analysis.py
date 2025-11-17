@@ -2,7 +2,7 @@
 Analysis job models
 """
 from sqlalchemy import Column, String, Integer, DateTime, JSON, Enum, Text, BigInteger, ForeignKey
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from datetime import datetime
 import uuid
 import enum
@@ -116,10 +116,13 @@ class AnalysisEvidence(Base):
     evidence_type = Column(Enum(EvidenceType), nullable=False, index=True)
     evidence_data = Column(JSON, nullable=True)
 
-    # Storage reference for large files
+    # Storage reference for large files (legacy)
     storage_path = Column(String(500), nullable=True)
     file_size = Column(BigInteger, nullable=True)
     checksum = Column(String(64), nullable=True)  # SHA256
+
+    # Direct JSONB storage for VEX documents (preferred)
+    vex_document_data = Column(JSONB, nullable=True)
 
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
@@ -137,6 +140,7 @@ class AnalysisEvidence(Base):
             "evidence_data": self.evidence_data,
             "storage_path": self.storage_path,
             "file_size": self.file_size,
+            "vex_document_data": self.vex_document_data,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "description": self.description,
         }
