@@ -102,32 +102,75 @@ def deploy_workload_for_analysis(
 
 def wait_for_workload_ready(deployment_name: str, timeout: int = 120) -> bool:
     """
-    Wait for deployment to be ready
+    Wait for deployment to be ready with detailed failure reporting
 
     Args:
         deployment_name: Name of deployment
         timeout: Timeout in seconds
 
     Returns:
-        True if ready, False if timeout
+        True if ready, False if timeout or failure
     """
     logger.info(f"Waiting for deployment {deployment_name} to be ready...")
 
     import time
     start_time = time.time()
+    last_status = None
 
     kubescape_service = get_kubescape_service()
     while time.time() - start_time < timeout:
         status = kubescape_service.get_deployment_status(deployment_name)
+        last_status = status
 
         if status['status'] == 'ready':
             logger.info(f"Deployment {deployment_name} is ready")
             return True
 
+        # Log detailed failure info if available
+        if 'failure_details' in status:
+            failure_details = status['failure_details']
+
+            # Check for container failures
+            if failure_details.get('container_statuses'):
+                for container in failure_details['container_statuses']:
+                    if not container.get('ready'):
+                        container_name = container.get('container_name', 'unknown')
+                        state = container.get('state', 'unknown')
+                        reason = container.get('reason', 'N/A')
+
+                        logger.warning(
+                            f"Container {container_name} not ready: state={state}, reason={reason}",
+                            extra={
+                                "deployment_name": deployment_name,
+                                "container_status": container
+                            }
+                        )
+
         logger.debug(f"Deployment status: {status}")
         time.sleep(5)
 
-    logger.warning(f"Deployment {deployment_name} not ready after {timeout}s")
+    # Log final failure details on timeout
+    logger.error(
+        f"Deployment {deployment_name} not ready after {timeout}s",
+        extra={
+            "deployment_name": deployment_name,
+            "timeout": timeout,
+            "final_status": last_status
+        }
+    )
+
+    # Log specific failure reasons if available
+    if last_status and 'failure_details' in last_status:
+        failure_summary = []
+        for container in last_status['failure_details'].get('container_statuses', []):
+            if not container.get('ready'):
+                failure_summary.append(
+                    f"{container.get('container_name')}: {container.get('reason', 'Unknown')}"
+                )
+
+        if failure_summary:
+            logger.error(f"Container failures: {', '.join(failure_summary)}")
+
     return False
 
 

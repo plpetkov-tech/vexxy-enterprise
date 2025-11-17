@@ -392,20 +392,27 @@ grypeOfflineDB:
         """
         return client.V1Container(
             name="tracee-profiler",
-            image="aquasec/tracee:latest",
+            image="aquasec/tracee:0.20.0",  # Pin to stable version
             image_pull_policy="IfNotPresent",  # Use local image if available
             command=[
                 "/tracee/tracee",
-                "--output", "format:json",
+                "--scope", "comm=target",  # Only trace the target container process
+                "--scope", "follow",  # Include child processes
+                "--events", "open,openat,openat2,read,write,execve,connect,socket,clone,fork",
+                "--output", "json:/tracee-output/events.json",
                 "--output", "option:parse-arguments",
-                "--output", "out-file:/tracee-output/events.json",
-                "--trace", "comm=target",  # Only trace the target container
-                "--trace", "event=open,openat,openat2,read,write,execve,connect,socket,clone,fork"
+                "--log", "info"
             ],
             volume_mounts=[
                 client.V1VolumeMount(
                     name="tracee-output",
                     mount_path="/tracee-output"
+                ),
+                # Required for Tracee to access host OS info
+                client.V1VolumeMount(
+                    name="os-release",
+                    mount_path="/etc/os-release-host",
+                    read_only=True
                 )
             ],
             resources=client.V1ResourceRequirements(
@@ -423,7 +430,13 @@ grypeOfflineDB:
                 capabilities=client.V1Capabilities(
                     add=["SYS_ADMIN", "SYS_RESOURCE", "SYS_PTRACE"]
                 )
-            )
+            ),
+            env=[
+                client.V1EnvVar(
+                    name="LIBBPFGO_OSRELEASE_FILE",
+                    value="/etc/os-release-host"
+                )
+            ]
         )
 
     def deploy_workload_for_analysis(
@@ -544,11 +557,18 @@ grypeOfflineDB:
                         restart_policy="Always",
                         # Share process namespace if Tracee is enabled
                         share_process_namespace=True if job_config.get("enable_profiling", True) else None,
-                        # Volumes for Tracee output
+                        # Volumes for Tracee output and host OS info
                         volumes=[
                             client.V1Volume(
                                 name="tracee-output",
                                 empty_dir={}
+                            ),
+                            client.V1Volume(
+                                name="os-release",
+                                host_path=client.V1HostPathVolumeSource(
+                                    path="/etc/os-release",
+                                    type="File"
+                                )
                             )
                         ] if job_config.get("enable_profiling", True) else None
                     )
@@ -991,19 +1011,92 @@ grypeOfflineDB:
                 details={"deployment_name": deployment_name}
             )
 
+    def _get_pod_failure_details(self, deployment_name: str) -> Dict:
+        """
+        Get detailed failure information from pods in a deployment
+
+        Args:
+            deployment_name: Name of deployment
+
+        Returns:
+            dict with pod failure details
+        """
+        try:
+            # Get pods for this deployment using label selector
+            pods = self.core_v1.list_namespaced_pod(
+                namespace=self.namespace,
+                label_selector=f"app=vexxy-premium,component=analysis"
+            )
+
+            failure_info = {
+                "pod_count": len(pods.items),
+                "container_statuses": [],
+                "pod_conditions": []
+            }
+
+            for pod in pods.items:
+                # Check if this pod belongs to our deployment
+                if not pod.metadata.name.startswith(deployment_name.rsplit('-', 1)[0]):
+                    continue
+
+                # Get container statuses
+                if pod.status.container_statuses:
+                    for container_status in pod.status.container_statuses:
+                        status_detail = {
+                            "container_name": container_status.name,
+                            "ready": container_status.ready,
+                            "restart_count": container_status.restart_count
+                        }
+
+                        # Check for waiting state
+                        if container_status.state.waiting:
+                            status_detail["state"] = "waiting"
+                            status_detail["reason"] = container_status.state.waiting.reason
+                            status_detail["message"] = container_status.state.waiting.message
+
+                        # Check for terminated state
+                        elif container_status.state.terminated:
+                            status_detail["state"] = "terminated"
+                            status_detail["reason"] = container_status.state.terminated.reason
+                            status_detail["exit_code"] = container_status.state.terminated.exit_code
+                            status_detail["message"] = container_status.state.terminated.message
+
+                        # Running state
+                        elif container_status.state.running:
+                            status_detail["state"] = "running"
+
+                        failure_info["container_statuses"].append(status_detail)
+
+                # Get pod conditions
+                if pod.status.conditions:
+                    for condition in pod.status.conditions:
+                        if condition.status == "False":
+                            failure_info["pod_conditions"].append({
+                                "type": condition.type,
+                                "status": condition.status,
+                                "reason": condition.reason,
+                                "message": condition.message
+                            })
+
+            return failure_info
+
+        except Exception as e:
+            logger.warning(f"Failed to get pod failure details: {e}")
+            return {"error": str(e)}
+
     @retry_with_backoff(
         exceptions=(ApiException,),
         config=RetryConfig(max_attempts=3, initial_delay=1.0)
     )
     def get_deployment_status(self, deployment_name: str) -> Dict:
         """
-        Get status of analysis deployment
+        Get status of analysis deployment with detailed failure information
 
         Args:
             deployment_name: Name of deployment
 
         Returns:
-            dict with deployment status
+            dict with deployment status and failure details if not ready
 
         Raises:
             KubernetesError: If status check fails (except for 404)
@@ -1014,13 +1107,44 @@ grypeOfflineDB:
                 namespace=self.namespace
             )
 
+            is_ready = deployment.status.ready_replicas and deployment.status.ready_replicas > 0
+
             status_info = {
                 "deployment_name": deployment_name,
                 "replicas": deployment.status.replicas or 0,
                 "ready_replicas": deployment.status.ready_replicas or 0,
                 "available_replicas": deployment.status.available_replicas or 0,
-                "status": "ready" if deployment.status.ready_replicas else "not_ready"
+                "status": "ready" if is_ready else "not_ready"
             }
+
+            # Get detailed failure information regardless of ready state
+            failure_details = self._get_pod_failure_details(deployment_name)
+
+            # Check if the target container is ready even if sidecars are failing
+            # This allows graceful degradation when optional sidecars (like Tracee) fail
+            if not is_ready and failure_details.get("container_statuses"):
+                target_container_ready = False
+                for container in failure_details["container_statuses"]:
+                    if container.get("container_name") == "target" and container.get("ready"):
+                        target_container_ready = True
+                        break
+
+                # If target container is ready, mark deployment as ready (degraded mode)
+                if target_container_ready:
+                    logger.warning(
+                        f"Deployment {deployment_name} running in degraded mode (target ready, sidecars failing)",
+                        extra={"deployment_name": deployment_name, "failure_details": failure_details}
+                    )
+                    status_info["status"] = "ready"
+                    status_info["degraded"] = True
+                    status_info["sidecar_failures"] = [
+                        c for c in failure_details["container_statuses"]
+                        if not c.get("ready") and c.get("container_name") != "target"
+                    ]
+
+            # If not ready, include detailed failure information
+            if status_info["status"] != "ready":
+                status_info["failure_details"] = failure_details
 
             logger.debug(
                 f"Deployment {deployment_name} status: {status_info['status']}",
