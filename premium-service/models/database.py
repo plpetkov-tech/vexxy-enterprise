@@ -43,5 +43,6 @@ def init_db():
     """Initialize database tables"""
     # Import all models here to ensure they're registered
     from models import analysis  # noqa
+    from models import billing  # noqa
 
     Base.metadata.create_all(bind=engine)

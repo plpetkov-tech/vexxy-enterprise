@@ -71,6 +71,30 @@ class InvalidConfigurationError(ValidationError):
         super().__init__(message=message, details=details)
 
 
+# 401 - Authentication Errors
+class UnauthorizedError(VexxyException):
+    """Authentication required or failed"""
+    def __init__(self, message: str = "Authentication required", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            message=message,
+            error_code="UNAUTHORIZED",
+            status_code=401,
+            details=details
+        )
+
+
+# 403 - Authorization Errors
+class ForbiddenError(VexxyException):
+    """Insufficient permissions"""
+    def __init__(self, message: str = "Insufficient permissions", details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            message=message,
+            error_code="FORBIDDEN",
+            status_code=403,
+            details=details
+        )
+
+
 # 404 - Not Found Errors
 class ResourceNotFoundError(VexxyException):
     """Requested resource does not exist"""

@@ -1,0 +1,334 @@
+VEXxy Enterprise - Codebase Directory Structure
+===============================================
+
+/home/user/vexxy-enterprise/
+│
+├── README.md (Main project overview)
+├── PREMIUM_VEX_INTEGRATION_PLAN.md (Architecture planning doc)
+├── KUBESCAPE_INTEGRATION_SUMMARY.md
+│
+└── premium-service/
+    ├── README.md (Service documentation)
+    ├── requirements.txt (Dependencies - NO STRIPE SDK YET)
+    ├── requirements-dev.txt
+    ├── docker-compose.yml (Local development: API, Worker, DB, Redis, Flower)
+    ├── Dockerfile (Service container image)
+    │
+    ├── api/
+    │   ├── main.py (FastAPI app - 650 lines)
+    │   │   ├── FastAPI app initialization
+    │   │   ├── Middleware setup
+    │   │   ├── Health check endpoint
+    │   │   ├── POST /api/v1/analysis/submit (NEEDS AUTH)
+    │   │   ├── GET /api/v1/analysis/{job_id}/status
+    │   │   ├── GET /api/v1/analysis/{job_id}/results
+    │   │   ├── DELETE /api/v1/analysis/{job_id}
+    │   │   ├── GET /api/v1/analysis (list with pagination)
+    │   │   └── GET /api/v1/vex/{vex_id}
+    │   │
+    │   └── schemas.py (Pydantic models)
+    │       ├── JobStatusEnum
+    │       ├── AnalysisRequest
+    │       ├── AnalysisConfig
+    │       ├── AnalysisJobResponse
+    │       ├── AnalysisStatusResponse
+    │       ├── AnalysisResults
+    │       ├── ExecutionProfile
+    │       ├── ReachabilityResult
+    │       ├── SecurityAlert
+    │       ├── SecurityFindings
+    │       └── HealthResponse
+    │
+    ├── models/
+    │   ├── __init__.py
+    │   ├── database.py
+    │   │   ├── SQLAlchemy engine setup
+    │   │   ├── SessionLocal factory
+    │   │   └── get_db() dependency
+    │   │
+    │   └── analysis.py (Database models)
+    │       ├── PremiumAnalysisJob
+    │       │   ├── id, organization_id (FK - NOT CREATED YET)
+    │       │   ├── image_ref, image_digest
+    │       │   ├── status, priority, progress_percent
+    │       │   ├── execution_profile (JSON)
+    │       │   ├── reachability_results (JSON)
+    │       │   ├── security_findings (JSON)
+    │       │   ├── sandbox_id, sandbox_job_name
+    │       │   ├── billed_at, cost_credits (BILLING READY)
+    │       │   ├── error_message, error_traceback
+    │       │   └── timestamps: created_at, started_at, completed_at
+    │       │
+    │       ├── AnalysisEvidence
+    │       │   ├── analysis_job_id (FK)
+    │       │   ├── evidence_type (Enum)
+    │       │   ├── evidence_data (JSON)
+    │       │   ├── vex_document_data (JSONB)
+    │       │   ├── storage_path, file_size, checksum
+    │       │   └── created_at, description
+    │       │
+    │       ├── JobStatus (Enum)
+    │       └── EvidenceType (Enum)
+    │
+    ├── workers/
+    │   ├── celery_app.py
+    │   │   ├── Celery app configuration
+    │   │   ├── Redis broker/backend: redis://localhost:6379/0
+    │   │   ├── Task signals (prerun, postrun, failure)
+    │   │   └── Task time limits: 30min hard, 25min soft
+    │   │
+    │   ├── tasks.py (Main orchestration - 400 lines)
+    │   │   ├── AnalysisTask base class (error/success handling)
+    │   │   │
+    │   │   └── @celery_app.task: run_premium_analysis()
+    │   │       Phase 1: Check Kubescape installed
+    │   │       Phase 2: Deploy workload
+    │   │       Phase 3: Wait for readiness
+    │   │       Phase 3.5: Create K8s Service (if ports)
+    │   │       Phase 3.6: Run OWASP ZAP scan (if fuzzing)
+    │   │       Phase 4: Wait for Kubescape analysis
+    │   │       Phase 5: Extract VEX + filtered SBOM
+    │   │       Phase 6: Process VEX
+    │   │       Phase 7: Generate summary
+    │   │       Phase 8: Cleanup
+    │   │       BILLING INTEGRATION POINT: After phase 8
+    │   │
+    │   ├── tasks_impl.py (Legacy implementation)
+    │   └── tasks_impl_kubescape.py (Helper functions)
+    │
+    ├── services/
+    │   ├── __init__.py (Exports all services)
+    │   │
+    │   ├── kubescape.py (450 lines)
+    │   │   ├── KubescapeService class
+    │   │   ├── Helm deployment
+    │   │   ├── Namespace management
+    │   │   ├── Workload deployment
+    │   │   ├── VEX extraction from K8s CRDs
+    │   │   └── Filtered SBOM extraction
+    │   │
+    │   ├── sandbox.py (320 lines)
+    │   │   ├── SandboxManager class
+    │   │   ├── Deployment creation
+    │   │   ├── Resource limits enforcement
+    │   │   ├── Readiness waiting
+    │   │   └── Cleanup
+    │   │
+    │   ├── evidence.py (240 lines) - BILLING INTEGRATION POINT
+    │   │   ├── EvidenceStorage class
+    │   │   ├── store_evidence() - All evidence types
+    │   │   ├── store_vex_document() - JSONB storage
+    │   │   ├── retrieve_vex_by_id()
+    │   │   ├── store_fuzzing_results()
+    │   │   └── store_filtered_sbom()
+    │   │
+    │   ├── reachability.py (400 lines)
+    │   │   ├── ReachabilityAnalyzer class
+    │   │   ├── CVE-to-code mapping
+    │   │   ├── Execution coverage analysis
+    │   │   └── Confidence scoring
+    │   │
+    │   ├── owasp_zap.py (600 lines)
+    │   │   ├── ZAPService class
+    │   │   ├── OWASP ZAP integration
+    │   │   ├── Endpoint fuzzing
+    │   │   └── SecurityFindings collection
+    │   │
+    │   ├── sbom.py (240 lines)
+    │   │   ├── SBOMService class
+    │   │   └── Filtered SBOM handling
+    │   │
+    │   └── profiler.py (320 lines)
+    │       ├── ProfilerService class
+    │       ├── eBPF profiling
+    │       ├── Execution trace parsing
+    │       └── ExecutionProfile generation
+    │
+    ├── middleware/
+    │   ├── __init__.py
+    │   │
+    │   ├── error_handler.py
+    │   │   ├── vexxy_exception_handler()
+    │   │   ├── validation_error_handler()
+    │   │   └── Generic exception handling
+    │   │
+    │   ├── logging_middleware.py
+    │   │   ├── Structured logging setup
+    │   │   ├── JSON logging support
+    │   │   └── Request/response logging
+    │   │
+    │   ├── correlation_id.py
+    │   │   ├── Request correlation tracking
+    │   │   └── ID propagation
+    │   │
+    │   └── [NEW] authentication.py (TO BE CREATED)
+    │       ├── JWT token validation
+    │       ├── Organization context extraction
+    │       └── require_auth dependency
+    │
+    ├── utils/
+    │   ├── __init__.py
+    │   │
+    │   ├── kubernetes_config.py
+    │   │   ├── load_kubernetes_config()
+    │   │   └── Kubeconfig loading
+    │   │
+    │   ├── retry.py
+    │   │   ├── RetryConfig class
+    │   │   └── retry_with_backoff()
+    │   │
+    │   └── [NEW] quota.py (TO BE CREATED)
+    │       ├── check_quota()
+    │       ├── get_organization_tier()
+    │       └── get_available_credits()
+    │
+    ├── config/
+    │   └── settings.py (Settings class)
+    │       ├── Service configuration
+    │       ├── Database settings
+    │       ├── Kubernetes settings
+    │       ├── JWT settings (unused)
+    │       ├── OWASP ZAP settings
+    │       ├── Storage settings
+    │       └── [NEW TO ADD] Stripe settings, tier pricing
+    │
+    ├── exceptions.py (Custom exception hierarchy - 240 lines)
+    │   ├── VexxyException (base)
+    │   ├── ValidationError (400)
+    │   ├── JobNotFoundError (404)
+    │   ├── InvalidJobStateError (409)
+    │   ├── QuotaExceededError (429) - READY TO USE
+    │   ├── InternalServiceError (500)
+    │   ├── DatabaseError (500)
+    │   ├── KubernetesError (502)
+    │   ├── KubescapeError (502)
+    │   ├── SandboxError (502)
+    │   ├── ServiceUnavailableError (503)
+    │   ├── TimeoutError (504)
+    │   └── AnalysisTimeoutError (504)
+    │
+    ├── migrations/
+    │   ├── 003_add_vex_jsonb_storage.sql
+    │   └── add_security_findings.sql
+    │
+    ├── k8s/
+    │   ├── namespace.yaml
+    │   └── Other K8s manifests
+    │
+    ├── scripts/
+    │   ├── Utility scripts
+    │   └── Initialization scripts
+    │
+    └── tests/
+        └── [EMPTY - No tests yet]
+
+
+DATABASE SCHEMA
+===============
+
+PostgreSQL (vexxy_premium)
+
+Table: premium_analysis_jobs
+├── id (UUID PK)
+├── organization_id (UUID FK) ← NEEDS ORGANIZATION TABLE
+├── image_ref (VARCHAR)
+├── image_digest (VARCHAR)
+├── sbom_id (UUID)
+├── status (ENUM) - {queued, running, analyzing, complete, failed, cancelled}
+├── priority (INT)
+├── progress_percent (INT)
+├── current_phase (VARCHAR)
+├── execution_profile (JSON)
+├── reachability_results (JSON)
+├── security_findings (JSON)
+├── generated_vex_id (UUID)
+├── sandbox_id (VARCHAR)
+├── sandbox_job_name (VARCHAR)
+├── billed_at (TIMESTAMP) ← BILLING READY
+├── cost_credits (INT) ← BILLING READY
+├── created_at (TIMESTAMP)
+├── started_at (TIMESTAMP)
+├── completed_at (TIMESTAMP)
+├── error_message (TEXT)
+├── error_traceback (TEXT)
+└── retry_count (INT)
+
+Table: analysis_evidence
+├── id (UUID PK)
+├── analysis_job_id (UUID FK)
+├── evidence_type (ENUM)
+├── evidence_data (JSON)
+├── storage_path (VARCHAR)
+├── file_size (BIGINT)
+├── checksum (VARCHAR)
+├── vex_document_data (JSONB) ← VEX storage
+├── created_at (TIMESTAMP)
+└── description (TEXT)
+
+TABLES TO CREATE:
+├── organizations
+├── users
+├── subscriptions
+├── billing_events
+└── stripe_customers
+
+
+DEPENDENCIES (requirements.txt)
+================================
+
+Current:
+  - fastapi==0.104.1
+  - uvicorn==0.24.0
+  - pydantic==2.5.0
+  - sqlalchemy==2.0.23
+  - alembic==1.13.0
+  - psycopg2-binary==2.9.9
+  - celery[redis]==5.4.0
+  - redis==5.2.0
+  - flower==2.0.1
+  - kubernetes==28.1.0
+  - httpx==0.25.2
+  - python-jose[cryptography]==3.3.0
+  - passlib[bcrypt]==1.7.4
+  - python-owasp-zap-v2.4==0.0.21
+  - prometheus-client==0.19.0
+  - python-dateutil==2.8.2
+
+To Add for Billing:
+  - stripe==5.18.0           ← PRIMARY
+  - pyjwt==2.8.1             ← if upgrading auth
+
+
+KEY FINDINGS
+============
+
+✅ STRENGTHS:
+- FastAPI modern, async-first framework
+- Clean architecture: API → Workers → Services → Data
+- Celery for scalable async processing
+- Professional error handling
+- Structured logging
+- Kubernetes-native design
+- Database schema ready for billing
+
+⚠️ GAPS:
+- ZERO authentication/authorization
+- No Organization/User/Subscription models
+- No Stripe integration
+- No billing ledger/events
+- No quota enforcement
+- Only dummy hardcoded organization_id
+
+🎯 INTEGRATION POINTS:
+1. Authentication middleware (new)
+2. Quota checking in submit_analysis()
+3. Cost calculation in task completion
+4. Webhook processing (new)
+5. Billing API endpoints (new)
+
+📊 CODE STATISTICS:
+- Total Python files: 30
+- Lines of code: ~3,500
+- Main files: api/main.py (650), services/kubescape.py (450), workers/tasks.py (400)
+- Languages: Python (FastAPI), SQL (migrations), YAML (K8s manifests)
+

@@ -310,6 +310,39 @@ def run_premium_analysis(self, job_id: str, image_ref: str, image_digest: str, c
         logger.info(f"[{job_id}] Analysis completed successfully")
         logger.info(f"[{job_id}] Summary: {summary}")
 
+        # Calculate cost and record billing event
+        try:
+            from services.billing import BillingService
+
+            # Calculate cost based on analysis configuration and duration
+            base_cost = 10  # Base cost in credits
+            duration_minutes = (datetime.utcnow() - job.created_at).total_seconds() / 60
+
+            # Add cost for enabled features
+            cost_credits = base_cost
+            if config.get("enable_fuzzing", True):
+                cost_credits += 5  # Additional cost for security fuzzing
+            if config.get("enable_profiling", True):
+                cost_credits += 3  # Additional cost for profiling
+            if config.get("enable_code_coverage", False):
+                cost_credits += 7  # Additional cost for code coverage
+
+            # Add cost based on duration (1 credit per 5 minutes)
+            duration_cost = int(duration_minutes / 5)
+            cost_credits += duration_cost
+
+            logger.info(f"[{job_id}] Calculated cost: {cost_credits} credits (base={base_cost}, duration={duration_cost})")
+
+            # Record billing event
+            billing_service = BillingService(db)
+            billing_service.record_analysis_cost(job_id, cost_credits)
+
+            logger.info(f"[{job_id}] Billing event recorded: {cost_credits} credits")
+
+        except Exception as billing_error:
+            logger.error(f"[{job_id}] Failed to record billing event: {billing_error}", exc_info=True)
+            # Don't fail the analysis if billing fails
+
         return {
             "status": "success",
             "job_id": job_id,
