@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     jwt_secret_key: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
 
+    # Stripe Integration (Billing)
+    stripe_secret_key: str = "sk_test_changeme"  # Stripe secret key (sk_test_* for test mode)
+    stripe_publishable_key: str = "pk_test_changeme"  # Stripe publishable key (pk_test_* for test mode)
+    stripe_webhook_secret: str = "whsec_changeme"  # Webhook signing secret from Stripe dashboard
+
     # VEXxy Core Integration
     vexxy_backend_url: str = "http://localhost:8000"
     vexxy_api_key: Optional[str] = None

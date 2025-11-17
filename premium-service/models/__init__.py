@@ -8,6 +8,16 @@ from .analysis import (
     JobStatus,
     EvidenceType
 )
+from .billing import (
+    Organization,
+    User,
+    Subscription,
+    BillingEvent,
+    APIKey,
+    SubscriptionTier,
+    SubscriptionStatus,
+    BillingEventType
+)
 
 __all__ = [
     "Base",
@@ -18,4 +28,12 @@ __all__ = [
     "AnalysisEvidence",
     "JobStatus",
     "EvidenceType",
+    "Organization",
+    "User",
+    "Subscription",
+    "BillingEvent",
+    "APIKey",
+    "SubscriptionTier",
+    "SubscriptionStatus",
+    "BillingEventType",
 ]
