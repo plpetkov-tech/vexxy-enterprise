@@ -393,6 +393,7 @@ grypeOfflineDB:
         return client.V1Container(
             name="tracee-profiler",
             image="aquasec/tracee:latest",
+            image_pull_policy="IfNotPresent",  # Use local image if available
             command=[
                 "/tracee/tracee",
                 "--output", "format:json",

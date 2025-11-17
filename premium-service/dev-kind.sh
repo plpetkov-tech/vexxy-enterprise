@@ -219,23 +219,27 @@ spec:
           protocol: TCP
         resources:
           requests:
-            cpu: 500m
-            memory: 512Mi
-          limits:
-            cpu: 2
+            cpu: 1
             memory: 2Gi
+          limits:
+            cpu: 3
+            memory: 6Gi
         livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
           httpGet:
             path: /
             port: 8080
           initialDelaySeconds: 30
           periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /
-            port: 8080
-          initialDelaySeconds: 10
-          periodSeconds: 5
+          timeoutSeconds: 10
+          failureThreshold: 3
 ---
 apiVersion: v1
 kind: Service
@@ -262,6 +266,20 @@ EOF
     fi
 
     print_success "Infrastructure installation complete"
+}
+
+load_support_images() {
+    print_header "Loading Support Images"
+
+    # Load Tracee for runtime profiling (optional sidecar)
+    print_info "Pulling Tracee image for runtime profiling..."
+    if docker pull aquasec/tracee:latest 2>/dev/null; then
+        print_info "Loading Tracee into kind cluster..."
+        kind load docker-image aquasec/tracee:latest --name "$CLUSTER_NAME"
+        print_success "Tracee image loaded"
+    else
+        print_warning "Failed to pull Tracee image (optional, profiling will be disabled)"
+    fi
 }
 
 build_image() {
@@ -392,6 +410,7 @@ start() {
     fi
 
     install_infrastructure
+    load_support_images
     build_image
     deploy_services
     show_status
