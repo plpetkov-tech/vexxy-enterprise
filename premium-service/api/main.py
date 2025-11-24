@@ -1,5 +1,6 @@
 """
 Main FastAPI application for Premium VEX Service
+TILT LIVE UPDATE TEST - Should reload automatically!
 """
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.responses import JSONResponse
@@ -334,10 +335,10 @@ async def submit_analysis(
         organization_id = auth.organization_id
         logger.info(f"Authenticated request from org {organization_id}")
     except Exception as e:
-        # Fallback to dummy org for backward compatibility
-        # TODO: Remove this fallback to enforce authentication
-        logger.warning(f"Using dummy organization ID (authentication not enforced): {e}")
-        organization_id = "00000000-0000-0000-0000-000000000000"
+        # Fallback to admin org for development (backward compatibility)
+        # TODO: Remove this fallback to enforce authentication in production
+        logger.warning(f"Using default admin organization ID (authentication not enforced): {e}")
+        organization_id = "00000000-0000-0001-0000-000000000001"  # Admin Organization
 
     logger.info(f"Received analysis request for {request.image_ref}@{request.image_digest}")
 

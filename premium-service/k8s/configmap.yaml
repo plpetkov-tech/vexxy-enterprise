@@ -12,6 +12,8 @@ data:
   LOG_LEVEL: "INFO"
   K8S_IN_CLUSTER: "true"
   K8S_SANDBOX_NAMESPACE: "vexxy-sandbox"
+  DATABASE_POOL_SIZE: "20"
+  DATABASE_MAX_OVERFLOW: "30"
   # OWASP ZAP - now uses K8s service DNS directly!
   ZAP_HOST: "owasp-zap.security.svc.cluster.local"
   ZAP_PORT: "8080"

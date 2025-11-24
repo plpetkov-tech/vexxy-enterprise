@@ -83,4 +83,4 @@ spec:
   ports:
   - port: 5555
     targetPort: 5555
-    nodePort: 30555  # Accessible via kind at localhost:30555
+    nodePort: 30555  # Accessible via kind at localhost:5556 (mapped in Kind config)

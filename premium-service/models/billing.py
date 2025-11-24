@@ -219,7 +219,7 @@ class BillingEvent(Base):
     stripe_payment_intent_id = Column(String(255), nullable=True)
 
     # Metadata
-    metadata = Column(String, nullable=True)  # JSON serialized additional data
+    event_metadata = Column(String, nullable=True)  # JSON serialized additional data
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)

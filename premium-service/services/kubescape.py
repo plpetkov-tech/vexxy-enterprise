@@ -439,6 +439,38 @@ grypeOfflineDB:
             ]
         )
 
+    def _normalize_image_ref(self, image_ref: str) -> str:
+        """
+        Normalize image reference to include registry
+
+        Args:
+            image_ref: Image reference (may be missing registry)
+
+        Returns:
+            Normalized image reference with registry
+        """
+        # If already has registry (contains domain with dot or localhost), return as-is
+        if "/" in image_ref:
+            first_part = image_ref.split("/")[0]
+            if "." in first_part or "localhost" in first_part:
+                return image_ref
+
+        # Common registry mappings for well-known images
+        registry_map = {
+            "zaproxy/zaproxy": "ghcr.io/zaproxy/zaproxy",
+            "aquasec/trivy": "ghcr.io/aquasecurity/trivy",
+        }
+
+        if image_ref in registry_map:
+            normalized = registry_map[image_ref]
+            logger.info(f"Normalized image reference: '{image_ref}' -> '{normalized}'")
+            return normalized
+
+        # Default to docker.io for images without registry
+        normalized = f"docker.io/{image_ref}"
+        logger.info(f"Added docker.io registry: '{image_ref}' -> '{normalized}'")
+        return normalized
+
     def deploy_workload_for_analysis(
         self,
         job_id: str,
@@ -462,6 +494,9 @@ grypeOfflineDB:
             deployment_name: Name of created Deployment
         """
         deployment_name = f"vex-analysis-{job_id[:8]}"
+
+        # Normalize image reference to include registry
+        image_ref = self._normalize_image_ref(image_ref)
 
         # Environment variables
         env_vars = []
@@ -511,11 +546,28 @@ grypeOfflineDB:
         # Build containers list
         containers = [container]
 
-        # Add Tracee sidecar for runtime profiling if enabled
-        if job_config.get("enable_profiling", True):
+        # TODO: REVISE THIS IF VIABLE - Tracee profiler disabled due to kernel compatibility issues
+        # The Tracee eBPF profiler (aquasec/tracee:0.20.0) has CO-RE relocation issues with newer kernels (6.16+)
+        # Error: "failed to resolve CO-RE relocation <byte_off> [590] struct inode___older_v66.i_ctime"
+        # This needs either:
+        # 1. Upgrade to a newer Tracee version with better kernel support
+        # 2. Use a different runtime profiling solution
+        # 3. Make profiling optional only for compatible kernel versions
+
+        # Tracee is currently disabled system-wide due to kernel compatibility
+        # When re-enabled, respect the user's enable_profiling preference
+        profiling_enabled = False  # Set to True once Tracee kernel issues are resolved
+        user_wants_profiling = job_config.get("enable_profiling", True)
+
+        if profiling_enabled and user_wants_profiling:
             tracee_container = self._create_tracee_sidecar(job_id)
             containers.append(tracee_container)
             logger.info(f"Tracee profiling enabled for deployment {deployment_name}")
+        else:
+            if not profiling_enabled:
+                logger.info(f"Tracee profiling unavailable (kernel compatibility issue) for deployment {deployment_name}")
+            else:
+                logger.info(f"Tracee profiling disabled per user request for deployment {deployment_name}")
 
         # Deployment spec
         deployment = client.V1Deployment(
@@ -555,9 +607,9 @@ grypeOfflineDB:
                     spec=client.V1PodSpec(
                         containers=containers,
                         restart_policy="Always",
-                        # Share process namespace if Tracee is enabled
-                        share_process_namespace=True if job_config.get("enable_profiling", True) else None,
-                        # Volumes for Tracee output and host OS info
+                        # Share process namespace only if profiling is actually enabled
+                        share_process_namespace=True if (profiling_enabled and user_wants_profiling) else None,
+                        # Volumes for Tracee output and host OS info (only if profiling enabled)
                         volumes=[
                             client.V1Volume(
                                 name="tracee-output",
@@ -570,7 +622,7 @@ grypeOfflineDB:
                                     type="File"
                                 )
                             )
-                        ] if job_config.get("enable_profiling", True) else None
+                        ] if (profiling_enabled and user_wants_profiling) else None
                     )
                 )
             )

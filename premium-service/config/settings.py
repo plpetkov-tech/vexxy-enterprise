@@ -28,8 +28,8 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql://vexxy:vexxy@localhost:5432/vexxy_premium"
-    database_pool_size: int = 5
-    database_max_overflow: int = 10
+    database_pool_size: int = 20
+    database_max_overflow: int = 30
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"

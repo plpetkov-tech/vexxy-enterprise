@@ -450,12 +450,23 @@ def convert_vex_statements_to_reachability(vex_document: Dict) -> List[Dict]:
             vulnerable_files = []
 
             for product in products:
-                # Products are in purl format: pkg:type/namespace/name@version
-                product_id = product.get("@id", "")
-                if product_id:
-                    # Extract package name from purl
-                    # Example: pkg:oci/nginx@sha256:abc123 -> nginx
-                    if "/" in product_id:
+                # Check for subcomponents (actual vulnerable packages)
+                subcomponents = product.get("subcomponents") or []
+                if subcomponents:
+                    # Extract from subcomponents (e.g., pkg:pypi/starlette@0.46.2)
+                    for subcomponent in subcomponents:
+                        subcomponent_id = subcomponent.get("@id", "")
+                        if subcomponent_id and "/" in subcomponent_id:
+                            # Extract package name from purl
+                            # Example: pkg:pypi/starlette@0.46.2 -> starlette@0.46.2
+                            package = subcomponent_id.split("/")[-1]
+                            vulnerable_files.append(package)
+                else:
+                    # Fallback to product if no subcomponents
+                    product_id = product.get("@id", "")
+                    if product_id and "/" in product_id:
+                        # Extract package name from purl
+                        # Example: pkg:oci/nginx@sha256:abc123 -> nginx
                         package = product_id.split("/")[-1].split("@")[0]
                         vulnerable_files.append(package)
 

@@ -51,6 +51,8 @@ spec:
             - pg_isready
             - -U
             - vexxy
+            - -d
+            - vexxy_premium
           initialDelaySeconds: 30
           periodSeconds: 10
         readinessProbe:
@@ -59,6 +61,8 @@ spec:
             - pg_isready
             - -U
             - vexxy
+            - -d
+            - vexxy_premium
           initialDelaySeconds: 5
           periodSeconds: 5
   volumeClaimTemplates:
@@ -76,9 +80,9 @@ metadata:
   name: postgres
   namespace: vexxy-premium
 spec:
+  type: ClusterIP
   selector:
     app: postgres
   ports:
   - port: 5432
     targetPort: 5432
-  clusterIP: None  # Headless service for StatefulSet

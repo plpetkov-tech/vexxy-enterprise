@@ -14,6 +14,12 @@ engine = create_engine(
     pool_size=settings.database_pool_size,
     max_overflow=settings.database_max_overflow,
     echo=settings.environment == "development",
+    pool_pre_ping=True,
+    pool_recycle=3600,
+    connect_args={
+        "connect_timeout": 10,
+        "application_name": "vexxy-premium-service"
+    }
 )
 
 # Session factory
