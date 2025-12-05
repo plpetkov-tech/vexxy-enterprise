@@ -120,16 +120,24 @@ cd premium-service
 ### Quick Test
 
 ```bash
-# Submit analysis job
-curl -X POST http://localhost:8001/api/v1/analysis \
+# Submit analysis job with standard profile (recommended)
+curl -X POST http://localhost:8001/api/v1/analysis/submit \
   -H "Content-Type: application/json" \
   -d '{
     "image_ref": "nginx:latest",
     "image_digest": "sha256:abc123...",
+    "profile": "standard"
+  }'
+
+# Or use minimal profile for faster results
+curl -X POST http://localhost:8001/api/v1/analysis/submit \
+  -H "Content-Type: application/json" \
+  -d '{
+    "image_ref": "nginx:latest",
+    "image_digest": "sha256:abc123...",
+    "profile": "minimal",
     "config": {
-      "ports": [80],
-      "enable_fuzzing": true,
-      "analysis_duration": 60
+      "ports": [80]
     }
   }'
 
@@ -139,6 +147,8 @@ curl http://localhost:8001/api/v1/analysis/{job_id}/status
 # Get results (when complete)
 curl http://localhost:8001/api/v1/analysis/{job_id}/results
 ```
+
+**💡 Tip:** See [Analysis Profiles Guide](./docs/ANALYSIS_PROFILES.md) for profile selection and configuration options.
 
 ---
 
@@ -536,11 +546,17 @@ This is a private repository. For team members:
 
 ---
 
+## Documentation
+
+- **[Analysis Profiles Guide](./docs/ANALYSIS_PROFILES.md)** - Profile selection and configuration
+- **[OWASP ZAP Setup](./docs/OWASP_ZAP_SETUP.md)** - Security scanner configuration
+- **[Kubescape Architecture](./KUBESCAPE_ARCHITECTURE.md)** - Runtime sandbox details
+- **[API Docs](http://localhost:8001/docs)** - Interactive OpenAPI documentation
+
 ## Support
 
 - **Issues**: Open GitHub issue
 - **Questions**: Contact team
-- **Documentation**: See `/docs` directory (TODO)
 
 ---
 

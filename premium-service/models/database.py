@@ -1,10 +1,11 @@
 """
 Database connection and session management
 """
+
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
-from typing import Generator
+from typing import Generator, Any
 
 from config.settings import settings
 
@@ -13,20 +14,18 @@ engine = create_engine(
     settings.database_url,
     pool_size=settings.database_pool_size,
     max_overflow=settings.database_max_overflow,
+    pool_timeout=settings.database_pool_timeout,  # Added for autoscaling
     echo=settings.environment == "development",
-    pool_pre_ping=True,
-    pool_recycle=3600,
-    connect_args={
-        "connect_timeout": 10,
-        "application_name": "vexxy-premium-service"
-    }
+    pool_pre_ping=True,  # Test connections before using
+    pool_recycle=3600,  # Recycle connections after 1 hour
+    connect_args={"connect_timeout": 10, "application_name": "vexxy-premium-service"},
 )
 
 # Session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Base class for models
-Base = declarative_base()
+Base: Any = declarative_base()
 
 
 def get_db() -> Generator[Session, None, None]:

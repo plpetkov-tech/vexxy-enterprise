@@ -3,6 +3,7 @@ Stripe Webhook Handler
 
 Handles incoming webhook events from Stripe for payment and subscription updates.
 """
+
 import logging
 from datetime import datetime
 from typing import Dict, Any
@@ -16,9 +17,8 @@ from models import (
     get_db,
     Organization,
     Subscription,
-    BillingEvent,
     SubscriptionStatus,
-    BillingEventType
+    BillingEventType,
 )
 from services.billing import BillingService
 
@@ -99,7 +99,9 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     return {"status": "success"}
 
 
-async def handle_payment_succeeded(payment_intent: Dict[str, Any], db: Session, event_id: str):
+async def handle_payment_succeeded(
+    payment_intent: Dict[str, Any], db: Session, event_id: str
+):
     """Handle successful payment"""
     customer_id = payment_intent.get("customer")
     amount = payment_intent.get("amount")  # Amount in cents
@@ -108,10 +110,16 @@ async def handle_payment_succeeded(payment_intent: Dict[str, Any], db: Session, 
         logger.warning(f"Payment intent {payment_intent['id']} has no customer")
         return
 
+    if not amount:
+        logger.warning(f"Payment intent {payment_intent['id']} has no amount")
+        return
+
     # Find organization by Stripe customer ID
-    org = db.query(Organization).filter(
-        Organization.stripe_customer_id == customer_id
-    ).first()
+    org = (
+        db.query(Organization)
+        .filter(Organization.stripe_customer_id == customer_id)
+        .first()
+    )
 
     if not org:
         logger.warning(f"Organization not found for Stripe customer {customer_id}")
@@ -127,7 +135,7 @@ async def handle_payment_succeeded(payment_intent: Dict[str, Any], db: Session, 
         org.id,
         credits,
         description=f"Credit purchase via Stripe - ${amount/100:.2f}",
-        stripe_payment_intent_id=payment_intent["id"]
+        stripe_payment_intent_id=payment_intent["id"],
     )
 
     # Log billing event
@@ -138,13 +146,17 @@ async def handle_payment_succeeded(payment_intent: Dict[str, Any], db: Session, 
         stripe_event_id=event_id,
         stripe_payment_intent_id=payment_intent["id"],
         credits_amount=credits,
-        balance_after=org.credit_balance
+        balance_after=org.credit_balance,
     )
 
-    logger.info(f"Payment succeeded for org {org.id}: ${amount/100:.2f} = {credits} credits")
+    logger.info(
+        f"Payment succeeded for org {org.id}: ${amount/100:.2f} = {credits} credits"
+    )
 
 
-async def handle_payment_failed(payment_intent: Dict[str, Any], db: Session, event_id: str):
+async def handle_payment_failed(
+    payment_intent: Dict[str, Any], db: Session, event_id: str
+):
     """Handle failed payment"""
     customer_id = payment_intent.get("customer")
     amount = payment_intent.get("amount")
@@ -152,9 +164,15 @@ async def handle_payment_failed(payment_intent: Dict[str, Any], db: Session, eve
     if not customer_id:
         return
 
-    org = db.query(Organization).filter(
-        Organization.stripe_customer_id == customer_id
-    ).first()
+    if not amount:
+        logger.warning(f"Payment intent {payment_intent['id']} has no amount")
+        return
+
+    org = (
+        db.query(Organization)
+        .filter(Organization.stripe_customer_id == customer_id)
+        .first()
+    )
 
     if not org:
         return
@@ -167,34 +185,37 @@ async def handle_payment_failed(payment_intent: Dict[str, Any], db: Session, eve
         BillingEventType.PAYMENT_FAILED,
         f"Payment failed for ${amount/100:.2f}",
         stripe_event_id=event_id,
-        stripe_payment_intent_id=payment_intent["id"]
+        stripe_payment_intent_id=payment_intent["id"],
     )
 
     logger.warning(f"Payment failed for org {org.id}: ${amount/100:.2f}")
 
 
-async def handle_subscription_created(subscription: Dict[str, Any], db: Session, event_id: str):
+async def handle_subscription_created(
+    subscription: Dict[str, Any], db: Session, event_id: str
+):
     """Handle subscription creation"""
     customer_id = subscription.get("customer")
     subscription_id = subscription["id"]
 
-    org = db.query(Organization).filter(
-        Organization.stripe_customer_id == customer_id
-    ).first()
+    org = (
+        db.query(Organization)
+        .filter(Organization.stripe_customer_id == customer_id)
+        .first()
+    )
 
     if not org:
         logger.warning(f"Organization not found for Stripe customer {customer_id}")
         return
 
     # Get or create subscription record
-    db_subscription = db.query(Subscription).filter(
-        Subscription.organization_id == org.id
-    ).first()
+    db_subscription = (
+        db.query(Subscription).filter(Subscription.organization_id == org.id).first()
+    )
 
     if not db_subscription:
         # Create new subscription
         from models import SubscriptionTier
-        from datetime import datetime
 
         db_subscription = Subscription(
             organization_id=org.id,
@@ -202,17 +223,27 @@ async def handle_subscription_created(subscription: Dict[str, Any], db: Session,
             status=SubscriptionStatus.ACTIVE,
             stripe_subscription_id=subscription_id,
             stripe_price_id=subscription["items"]["data"][0]["price"]["id"],
-            current_period_start=datetime.fromtimestamp(subscription["current_period_start"]),
-            current_period_end=datetime.fromtimestamp(subscription["current_period_end"]),
+            current_period_start=datetime.fromtimestamp(
+                subscription["current_period_start"]
+            ),
+            current_period_end=datetime.fromtimestamp(
+                subscription["current_period_end"]
+            ),
         )
         db.add(db_subscription)
     else:
         # Update existing subscription
         db_subscription.stripe_subscription_id = subscription_id
-        db_subscription.stripe_price_id = subscription["items"]["data"][0]["price"]["id"]
+        db_subscription.stripe_price_id = subscription["items"]["data"][0]["price"][
+            "id"
+        ]
         db_subscription.status = SubscriptionStatus.ACTIVE
-        db_subscription.current_period_start = datetime.fromtimestamp(subscription["current_period_start"])
-        db_subscription.current_period_end = datetime.fromtimestamp(subscription["current_period_end"])
+        db_subscription.current_period_start = datetime.fromtimestamp(
+            subscription["current_period_start"]
+        )
+        db_subscription.current_period_end = datetime.fromtimestamp(
+            subscription["current_period_end"]
+        )
 
     db.commit()
 
@@ -222,19 +253,23 @@ async def handle_subscription_created(subscription: Dict[str, Any], db: Session,
         BillingEventType.SUBSCRIPTION_CREATED,
         f"Subscription created: {subscription_id}",
         subscription_id=db_subscription.id,
-        stripe_event_id=event_id
+        stripe_event_id=event_id,
     )
 
     logger.info(f"Subscription created for org {org.id}: {subscription_id}")
 
 
-async def handle_subscription_updated(subscription: Dict[str, Any], db: Session, event_id: str):
+async def handle_subscription_updated(
+    subscription: Dict[str, Any], db: Session, event_id: str
+):
     """Handle subscription update"""
     subscription_id = subscription["id"]
 
-    db_subscription = db.query(Subscription).filter(
-        Subscription.stripe_subscription_id == subscription_id
-    ).first()
+    db_subscription = (
+        db.query(Subscription)
+        .filter(Subscription.stripe_subscription_id == subscription_id)
+        .first()
+    )
 
     if not db_subscription:
         logger.warning(f"Subscription not found: {subscription_id}")
@@ -249,14 +284,24 @@ async def handle_subscription_updated(subscription: Dict[str, Any], db: Session,
         "unpaid": SubscriptionStatus.UNPAID,
     }
 
-    stripe_status = subscription.get("status")
-    db_subscription.status = status_mapping.get(stripe_status, SubscriptionStatus.ACTIVE)
-    db_subscription.current_period_start = datetime.fromtimestamp(subscription["current_period_start"])
-    db_subscription.current_period_end = datetime.fromtimestamp(subscription["current_period_end"])
-    db_subscription.cancel_at_period_end = subscription.get("cancel_at_period_end", False)
+    stripe_status = subscription.get("status") or "active"
+    db_subscription.status = status_mapping.get(
+        stripe_status, SubscriptionStatus.ACTIVE
+    )
+    db_subscription.current_period_start = datetime.fromtimestamp(
+        subscription["current_period_start"]
+    )
+    db_subscription.current_period_end = datetime.fromtimestamp(
+        subscription["current_period_end"]
+    )
+    db_subscription.cancel_at_period_end = subscription.get(
+        "cancel_at_period_end", False
+    )
 
     if subscription.get("canceled_at"):
-        db_subscription.canceled_at = datetime.fromtimestamp(subscription["canceled_at"])
+        db_subscription.canceled_at = datetime.fromtimestamp(
+            subscription["canceled_at"]
+        )
 
     db.commit()
 
@@ -266,19 +311,23 @@ async def handle_subscription_updated(subscription: Dict[str, Any], db: Session,
         BillingEventType.SUBSCRIPTION_UPDATED,
         f"Subscription updated: {subscription_id} - status: {stripe_status}",
         subscription_id=db_subscription.id,
-        stripe_event_id=event_id
+        stripe_event_id=event_id,
     )
 
     logger.info(f"Subscription updated: {subscription_id} - status: {stripe_status}")
 
 
-async def handle_subscription_deleted(subscription: Dict[str, Any], db: Session, event_id: str):
+async def handle_subscription_deleted(
+    subscription: Dict[str, Any], db: Session, event_id: str
+):
     """Handle subscription deletion"""
     subscription_id = subscription["id"]
 
-    db_subscription = db.query(Subscription).filter(
-        Subscription.stripe_subscription_id == subscription_id
-    ).first()
+    db_subscription = (
+        db.query(Subscription)
+        .filter(Subscription.stripe_subscription_id == subscription_id)
+        .first()
+    )
 
     if not db_subscription:
         logger.warning(f"Subscription not found: {subscription_id}")
@@ -294,23 +343,26 @@ async def handle_subscription_deleted(subscription: Dict[str, Any], db: Session,
         BillingEventType.SUBSCRIPTION_CANCELED,
         f"Subscription canceled: {subscription_id}",
         subscription_id=db_subscription.id,
-        stripe_event_id=event_id
+        stripe_event_id=event_id,
     )
 
     logger.info(f"Subscription deleted: {subscription_id}")
 
 
-async def handle_invoice_payment_succeeded(invoice: Dict[str, Any], db: Session, event_id: str):
+async def handle_invoice_payment_succeeded(
+    invoice: Dict[str, Any], db: Session, event_id: str
+):
     """Handle successful invoice payment"""
     customer_id = invoice.get("customer")
-    subscription_id = invoice.get("subscription")
 
     if not customer_id:
         return
 
-    org = db.query(Organization).filter(
-        Organization.stripe_customer_id == customer_id
-    ).first()
+    org = (
+        db.query(Organization)
+        .filter(Organization.stripe_customer_id == customer_id)
+        .first()
+    )
 
     if not org:
         return
@@ -322,13 +374,17 @@ async def handle_invoice_payment_succeeded(invoice: Dict[str, Any], db: Session,
         org.id,
         BillingEventType.PAYMENT_SUCCEEDED,
         f"Invoice payment succeeded: ${invoice['amount_paid']/100:.2f}",
-        stripe_event_id=event_id
+        stripe_event_id=event_id,
     )
 
-    logger.info(f"Invoice payment succeeded for org {org.id}: ${invoice['amount_paid']/100:.2f}")
+    logger.info(
+        f"Invoice payment succeeded for org {org.id}: ${invoice['amount_paid']/100:.2f}"
+    )
 
 
-async def handle_invoice_payment_failed(invoice: Dict[str, Any], db: Session, event_id: str):
+async def handle_invoice_payment_failed(
+    invoice: Dict[str, Any], db: Session, event_id: str
+):
     """Handle failed invoice payment"""
     customer_id = invoice.get("customer")
     subscription_id = invoice.get("subscription")
@@ -336,18 +392,22 @@ async def handle_invoice_payment_failed(invoice: Dict[str, Any], db: Session, ev
     if not customer_id:
         return
 
-    org = db.query(Organization).filter(
-        Organization.stripe_customer_id == customer_id
-    ).first()
+    org = (
+        db.query(Organization)
+        .filter(Organization.stripe_customer_id == customer_id)
+        .first()
+    )
 
     if not org:
         return
 
     # Update subscription status to past_due
     if subscription_id:
-        db_subscription = db.query(Subscription).filter(
-            Subscription.stripe_subscription_id == subscription_id
-        ).first()
+        db_subscription = (
+            db.query(Subscription)
+            .filter(Subscription.stripe_subscription_id == subscription_id)
+            .first()
+        )
 
         if db_subscription:
             db_subscription.status = SubscriptionStatus.PAST_DUE
@@ -360,7 +420,9 @@ async def handle_invoice_payment_failed(invoice: Dict[str, Any], db: Session, ev
         org.id,
         BillingEventType.PAYMENT_FAILED,
         f"Invoice payment failed: ${invoice['amount_due']/100:.2f}",
-        stripe_event_id=event_id
+        stripe_event_id=event_id,
     )
 
-    logger.warning(f"Invoice payment failed for org {org.id}: ${invoice['amount_due']/100:.2f}")
+    logger.warning(
+        f"Invoice payment failed for org {org.id}: ${invoice['amount_due']/100:.2f}"
+    )

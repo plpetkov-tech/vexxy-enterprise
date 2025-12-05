@@ -14,11 +14,10 @@ capabilities:
 nodeAgent:
   enabled: true
   config:
-    # Runtime analysis timing (5 minutes)
-    applicationActivityTime: 5m
-    learningPeriod: 5m
-    maxLearningPeriod: 5m
-    updatePeriod: 1m
+    learningPeriod: 10s
+    updatePeriod: 10s
+    applicationActivityTime: 10s
+
   resources:
     requests:
       cpu: 200m

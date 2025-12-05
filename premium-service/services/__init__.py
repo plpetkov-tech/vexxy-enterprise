@@ -1,6 +1,7 @@
 """
 Service layer for premium analysis
 """
+
 from .sandbox import SandboxManager
 from .profiler import ProfilerService, ExecutionProfile, TraceeParser
 from .reachability import ReachabilityAnalyzer, ReachabilityResult, VulnerabilityStatus

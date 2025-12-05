@@ -1,9 +1,18 @@
 """
 Billing and subscription models
 """
-from sqlalchemy import Column, String, Integer, DateTime, Enum, Text, Boolean, Float, ForeignKey, UniqueConstraint
+
+from sqlalchemy import (
+    Column,
+    String,
+    Integer,
+    DateTime,
+    Enum,
+    Text,
+    Boolean,
+    ForeignKey,
+)
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
 from datetime import datetime
 import uuid
 import enum
@@ -13,6 +22,7 @@ from .database import Base
 
 class SubscriptionTier(str, enum.Enum):
     """Subscription tier levels"""
+
     FREE = "free"
     STARTER = "starter"
     PROFESSIONAL = "professional"
@@ -21,6 +31,7 @@ class SubscriptionTier(str, enum.Enum):
 
 class SubscriptionStatus(str, enum.Enum):
     """Subscription status"""
+
     ACTIVE = "active"
     TRIALING = "trialing"
     PAST_DUE = "past_due"
@@ -30,6 +41,7 @@ class SubscriptionStatus(str, enum.Enum):
 
 class BillingEventType(str, enum.Enum):
     """Types of billing events"""
+
     ANALYSIS_COMPLETED = "analysis_completed"
     CREDIT_PURCHASED = "credit_purchased"
     CREDIT_DEDUCTED = "credit_deducted"
@@ -42,6 +54,7 @@ class BillingEventType(str, enum.Enum):
 
 class Organization(Base):
     """Organization/Company entity"""
+
     __tablename__ = "organizations"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -59,7 +72,9 @@ class Organization(Base):
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
     deleted_at = Column(DateTime, nullable=True)  # Soft delete
 
     def __repr__(self):
@@ -79,6 +94,7 @@ class Organization(Base):
 
 class User(Base):
     """User entity"""
+
     __tablename__ = "users"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -86,7 +102,7 @@ class User(Base):
         UUID(as_uuid=True),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
-        index=True
+        index=True,
     )
 
     # User details
@@ -101,7 +117,9 @@ class User(Base):
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
     last_login_at = Column(DateTime, nullable=True)
     deleted_at = Column(DateTime, nullable=True)  # Soft delete
 
@@ -119,12 +137,15 @@ class User(Base):
             "is_admin": self.is_admin,
             "email_verified": self.email_verified,
             "created_at": self.created_at.isoformat() if self.created_at else None,
-            "last_login_at": self.last_login_at.isoformat() if self.last_login_at else None,
+            "last_login_at": (
+                self.last_login_at.isoformat() if self.last_login_at else None
+            ),
         }
 
 
 class Subscription(Base):
     """Subscription plan for an organization"""
+
     __tablename__ = "subscriptions"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -133,12 +154,22 @@ class Subscription(Base):
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
-        unique=True  # One active subscription per organization
+        unique=True,  # One active subscription per organization
     )
 
     # Subscription details
-    tier = Column(Enum(SubscriptionTier), nullable=False, default=SubscriptionTier.FREE, index=True)
-    status = Column(Enum(SubscriptionStatus), nullable=False, default=SubscriptionStatus.ACTIVE, index=True)
+    tier = Column(  # type: ignore[var-annotated]
+        Enum(SubscriptionTier),
+        nullable=False,
+        default=SubscriptionTier.FREE,
+        index=True,
+    )
+    status = Column(  # type: ignore[var-annotated]
+        Enum(SubscriptionStatus),
+        nullable=False,
+        default=SubscriptionStatus.ACTIVE,
+        index=True,
+    )
 
     # Stripe integration
     stripe_subscription_id = Column(String(255), unique=True, nullable=True, index=True)
@@ -166,7 +197,9 @@ class Subscription(Base):
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
 
     def __repr__(self):
         return f"<Subscription {self.id} - {self.tier.value} ({self.status.value})>"
@@ -182,8 +215,14 @@ class Subscription(Base):
             "monthly_credit_limit": self.monthly_credit_limit,
             "current_period_analyses": self.current_period_analyses,
             "current_period_credits_used": self.current_period_credits_used,
-            "current_period_start": self.current_period_start.isoformat() if self.current_period_start else None,
-            "current_period_end": self.current_period_end.isoformat() if self.current_period_end else None,
+            "current_period_start": (
+                self.current_period_start.isoformat()
+                if self.current_period_start
+                else None
+            ),
+            "current_period_end": (
+                self.current_period_end.isoformat() if self.current_period_end else None
+            ),
             "trial_end": self.trial_end.isoformat() if self.trial_end else None,
             "cancel_at_period_end": self.cancel_at_period_end,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -192,6 +231,7 @@ class Subscription(Base):
 
 class BillingEvent(Base):
     """Billing event ledger for audit trail"""
+
     __tablename__ = "billing_events"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -199,11 +239,11 @@ class BillingEvent(Base):
         UUID(as_uuid=True),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
-        index=True
+        index=True,
     )
 
     # Event details
-    event_type = Column(Enum(BillingEventType), nullable=False, index=True)
+    event_type = Column(Enum(BillingEventType), nullable=False, index=True)  # type: ignore[var-annotated]
     description = Column(Text, nullable=True)
 
     # Related entities
@@ -234,7 +274,9 @@ class BillingEvent(Base):
             "organization_id": str(self.organization_id),
             "event_type": self.event_type.value,
             "description": self.description,
-            "analysis_job_id": str(self.analysis_job_id) if self.analysis_job_id else None,
+            "analysis_job_id": (
+                str(self.analysis_job_id) if self.analysis_job_id else None
+            ),
             "credits_amount": self.credits_amount,
             "balance_after": self.balance_after,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -243,6 +285,7 @@ class BillingEvent(Base):
 
 class APIKey(Base):
     """API keys for programmatic access"""
+
     __tablename__ = "api_keys"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -250,13 +293,13 @@ class APIKey(Base):
         UUID(as_uuid=True),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=False,
-        index=True
+        index=True,
     )
     user_id = Column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
-        index=True
+        index=True,
     )
 
     # Key details
@@ -285,7 +328,9 @@ class APIKey(Base):
             "name": self.name,
             "key_prefix": self.key_prefix,
             "is_active": self.is_active,
-            "last_used_at": self.last_used_at.isoformat() if self.last_used_at else None,
+            "last_used_at": (
+                self.last_used_at.isoformat() if self.last_used_at else None
+            ),
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
         }

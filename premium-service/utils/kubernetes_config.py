@@ -4,7 +4,8 @@ Kubernetes Configuration Utility
 Provides centralized kubeconfig loading to avoid multiple load attempts.
 The Kubernetes Python client expects configuration to be loaded once per process.
 """
-from kubernetes import client, config
+
+from kubernetes import client, config  # type: ignore[import-untyped]
 import logging
 import threading
 

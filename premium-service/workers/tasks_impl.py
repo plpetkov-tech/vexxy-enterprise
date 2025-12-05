@@ -3,16 +3,13 @@ Task implementation helpers
 
 Real implementations of analysis functions (not stubs).
 """
+
 from datetime import datetime
 import logging
 import asyncio
-from typing import Dict
+from uuid import UUID
 
 from models import JobStatus
-
-logger = logging.getLogger(__name__)
-
-# Initialize services
 from services import (
     SandboxManager,
     ProfilerService,
@@ -21,11 +18,15 @@ from services import (
     MockSBOMService,
 )
 
+logger = logging.getLogger(__name__)
+
 sandbox_manager = SandboxManager()
 profiler_service = ProfilerService()
 reachability_analyzer = ReachabilityAnalyzer()
 evidence_storage = EvidenceStorage()
-sbom_service = MockSBOMService()  # TODO: Switch to real SBOMService when backend is ready
+sbom_service = (
+    MockSBOMService()
+)  # TODO: Switch to real SBOMService when backend is ready
 
 
 def update_job_status(db, job, status: JobStatus, progress: int, phase: str):
@@ -52,7 +53,7 @@ def setup_sandbox(job, image_ref: str, image_digest: str, config: dict) -> str:
         job_id=str(job.id),
         image_ref=image_ref,
         image_digest=image_digest,
-        job_config=config
+        job_config=config,
     )
 
     logger.info(f"Created sandbox: {job_name}")
@@ -66,12 +67,13 @@ def start_container_with_profiling(sandbox_id: str, config: dict):
     # Job is already created with profiling sidecar
     # Wait for it to start
     import time
+
     max_wait = 60  # 60 seconds
     waited = 0
 
     while waited < max_wait:
         status = sandbox_manager.get_job_status(sandbox_id)
-        if status['status'] in ['running', 'succeeded']:
+        if status["status"] in ["running", "succeeded"]:
             logger.info(f"Job {sandbox_id} is {status['status']}")
             break
 
@@ -91,6 +93,7 @@ def execute_tests(sandbox_id: str, config: dict):
     logger.info(f"Waiting {test_timeout} seconds for tests to complete")
 
     import time
+
     time.sleep(min(test_timeout, 300))  # Cap at 5 minutes for now
 
     # Check if custom test script provided
@@ -104,7 +107,7 @@ def execute_tests(sandbox_id: str, config: dict):
         # TODO: Run ZAP fuzzer
 
 
-def collect_execution_profile(sandbox_id: str, job_id: str) -> dict:
+def collect_execution_profile(sandbox_id: str, job_id: UUID) -> dict:
     """Collect execution profile from profiler"""
     logger.info(f"Collecting execution profile from {sandbox_id}")
 
@@ -140,17 +143,13 @@ def collect_execution_profile(sandbox_id: str, job_id: str) -> dict:
             "summary": {
                 "total_files_accessed": 0,
                 "total_syscalls": 0,
-                "error": str(e)
-            }
+                "error": str(e),
+            },
         }
 
 
 async def analyze_reachability_async(
-    execution_profile: dict,
-    image_digest: str,
-    sbom_id,
-    config: dict,
-    job_id: str
+    execution_profile: dict, image_digest: str, sbom_id, config: dict, job_id: str
 ) -> dict:
     """Determine CVE reachability (async)"""
     logger.info("Analyzing reachability")
@@ -161,32 +160,35 @@ async def analyze_reachability_async(
         vulnerabilities = await sbom_service.fetch_vulnerabilities(sbom_id)
     else:
         # Fallback: try to find SBOM by image
-        sbom = await sbom_service.fetch_sbom_by_image(image_ref="unknown", image_digest=image_digest)
+        sbom = await sbom_service.fetch_sbom_by_image(
+            image_ref="unknown", image_digest=image_digest
+        )
         if sbom:
             vulnerabilities = sbom_service.extract_vulnerabilities_from_sbom(sbom)
         else:
             logger.warning("No SBOM found, using mock data")
-            sbom = await sbom_service.fetch_sbom(None)
-            vulnerabilities = await sbom_service.fetch_vulnerabilities(None)
+            # Use a dummy UUID for mock data
+            dummy_uuid = UUID("00000000-0000-0000-0000-000000000000")
+            sbom = await sbom_service.fetch_sbom(dummy_uuid)
+            vulnerabilities = await sbom_service.fetch_vulnerabilities(dummy_uuid)
 
     logger.info(f"Analyzing {len(vulnerabilities)} vulnerabilities")
 
     # Reconstruct ExecutionProfile object
     from services.profiler import ExecutionProfile as EP
+
     ep = EP()
-    ep.duration_seconds = execution_profile.get('duration_seconds', 0)
-    ep.files_accessed = set(execution_profile.get('files_accessed', []))
-    ep.syscalls = set(execution_profile.get('syscalls', []))
-    ep.syscall_counts = execution_profile.get('syscall_counts', {})
-    ep.network_connections = set(execution_profile.get('network_connections', []))
-    ep.loaded_libraries = set(execution_profile.get('loaded_libraries', []))
-    ep.executed_binaries = set(execution_profile.get('executed_binaries', []))
+    ep.duration_seconds = execution_profile.get("duration_seconds", 0)
+    ep.files_accessed = set(execution_profile.get("files_accessed", []))
+    ep.syscalls = set(execution_profile.get("syscalls", []))
+    ep.syscall_counts = execution_profile.get("syscall_counts", {})
+    ep.network_connections = set(execution_profile.get("network_connections", []))
+    ep.loaded_libraries = set(execution_profile.get("loaded_libraries", []))
+    ep.executed_binaries = set(execution_profile.get("executed_binaries", []))
 
     # Analyze reachability for all CVEs
     results = reachability_analyzer.analyze_all_cves(
-        vulnerabilities=vulnerabilities,
-        execution_profile=ep,
-        sbom=sbom or {}
+        vulnerabilities=vulnerabilities, execution_profile=ep, sbom=sbom or {}
     )
 
     # Convert to dict
@@ -194,8 +196,10 @@ async def analyze_reachability_async(
         "cves_analyzed": len(results),
         "not_affected": sum(1 for r in results if r.status.value == "not_affected"),
         "affected": sum(1 for r in results if r.status.value == "affected"),
-        "under_investigation": sum(1 for r in results if r.status.value == "under_investigation"),
-        "results": [r.to_dict() for r in results]
+        "under_investigation": sum(
+            1 for r in results if r.status.value == "under_investigation"
+        ),
+        "results": [r.to_dict() for r in results],
     }
 
     # Store reachability results as evidence
@@ -210,7 +214,9 @@ async def analyze_reachability_async(
     return results_dict
 
 
-def analyze_reachability(execution_profile: dict, image_digest: str, config: dict, job_id: str) -> dict:
+def analyze_reachability(
+    execution_profile: dict, image_digest: str, config: dict, job_id: str
+) -> dict:
     """Determine CVE reachability (sync wrapper)"""
 
     # Get event loop or create new one
@@ -221,41 +227,41 @@ def analyze_reachability(execution_profile: dict, image_digest: str, config: dic
         asyncio.set_event_loop(loop)
 
     # Run async function
-    sbom_id = config.get('sbom_id')
+    sbom_id = config.get("sbom_id")
     result = loop.run_until_complete(
-        analyze_reachability_async(execution_profile, image_digest, sbom_id, config, job_id)
+        analyze_reachability_async(
+            execution_profile, image_digest, sbom_id, config, job_id
+        )
     )
 
     return result
 
 
-def generate_vex_document(reachability_results: dict, execution_profile: dict, job) -> dict:
+def generate_vex_document(
+    reachability_results: dict, execution_profile: dict, job
+) -> dict:
     """Generate OpenVEX document"""
     logger.info("Generating VEX document")
 
     statements = []
 
     # Create VEX statement for each CVE
-    for result in reachability_results.get('results', []):
+    for result in reachability_results.get("results", []):
         statement = {
             "vulnerability": {
                 "@id": f"https://nvd.nist.gov/vuln/detail/{result['cve_id']}",
-                "name": result['cve_id']
+                "name": result["cve_id"],
             },
-            "products": [
-                {
-                    "@id": f"https://vexxy.dev/analysis/{job.id}"
-                }
-            ],
-            "status": result['status'],
-            "justification": result['justification'],
-            "impact_statement": result['reason'],
+            "products": [{"@id": f"https://vexxy.dev/analysis/{job.id}"}],
+            "status": result["status"],
+            "justification": result["justification"],
+            "impact_statement": result["reason"],
             "action_statement": (
                 "No action required. Vulnerable code not executed."
-                if result['status'] == "not_affected"
+                if result["status"] == "not_affected"
                 else "Investigate and remediate vulnerability."
             ),
-            "vexxy_evidence": result['evidence']
+            "vexxy_evidence": result["evidence"],
         }
         statements.append(statement)
 
@@ -265,7 +271,7 @@ def generate_vex_document(reachability_results: dict, execution_profile: dict, j
         "author": "VEXxy Premium Analysis Service",
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "version": 1,
-        "statements": statements
+        "statements": statements,
     }
 
     logger.info(f"Generated VEX document with {len(statements)} statements")

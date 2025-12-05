@@ -3,10 +3,11 @@ Kubernetes Sandbox Manager
 
 Manages isolated sandbox execution of container images for security analysis.
 """
-from kubernetes import client, config
-from kubernetes.client.rest import ApiException
+
+from kubernetes import client, config  # type: ignore[import-untyped]
+from kubernetes.client.rest import ApiException  # type: ignore[import-untyped]
 import logging
-from typing import Optional, Dict, List
+from typing import Dict, List
 from datetime import datetime
 
 from config.settings import settings
@@ -22,7 +23,7 @@ class SandboxManager:
     with profiling, fuzzing, and security analysis.
     """
 
-    def __init__(self, namespace: str = None):
+    def __init__(self, namespace: str | None = None):
         """
         Initialize Kubernetes client
 
@@ -66,11 +67,7 @@ class SandboxManager:
                 logger.error(f"Failed to check namespace: {e}")
 
     def create_sandbox_job(
-        self,
-        job_id: str,
-        image_ref: str,
-        image_digest: str,
-        job_config: Dict
+        self, job_id: str, image_ref: str, image_digest: str, job_config: Dict
     ) -> str:
         """
         Create Kubernetes Job for sandbox execution
@@ -103,18 +100,18 @@ class SandboxManager:
             resources=client.V1ResourceRequirements(
                 limits={
                     "cpu": settings.sandbox_cpu_limit,
-                    "memory": settings.sandbox_memory_limit
+                    "memory": settings.sandbox_memory_limit,
                 },
                 requests={
                     "cpu": settings.sandbox_cpu_request,
-                    "memory": settings.sandbox_memory_request
-                }
+                    "memory": settings.sandbox_memory_request,
+                },
             ),
             security_context=client.V1SecurityContext(
                 run_as_non_root=False,  # May need root for some images
                 allow_privilege_escalation=False,
-                read_only_root_filesystem=False
-            )
+                read_only_root_filesystem=False,
+            ),
         )
 
         # Logger sidecar (captures output)
@@ -124,12 +121,12 @@ class SandboxManager:
             command=[
                 "/bin/sh",
                 "-c",
-                "while true; do echo '[LOG]' $(date); ps aux | head -10; sleep 10; done"
+                "while true; do echo '[LOG]' $(date); ps aux | head -10; sleep 10; done",
             ],
             resources=client.V1ResourceRequirements(
                 limits={"cpu": "100m", "memory": "128Mi"},
-                requests={"cpu": "50m", "memory": "64Mi"}
-            )
+                requests={"cpu": "50m", "memory": "64Mi"},
+            ),
         )
 
         # Tracee profiler sidecar (eBPF profiling)
@@ -142,27 +139,30 @@ class SandboxManager:
                 image="aquasec/tracee:latest",
                 command=[
                     "tracee",
-                    "--output", "json",
-                    "--output", "option:parse-arguments",
-                    "--trace", "comm=target",  # Trace target container
-                    "--trace", "follow",  # Follow child processes
+                    "--output",
+                    "json",
+                    "--output",
+                    "option:parse-arguments",
+                    "--trace",
+                    "comm=target",  # Trace target container
+                    "--trace",
+                    "follow",  # Follow child processes
                 ],
                 security_context=client.V1SecurityContext(
                     privileged=True,  # Required for eBPF
                     capabilities=client.V1Capabilities(
                         add=["SYS_ADMIN", "SYS_RESOURCE", "SYS_PTRACE"]
-                    )
+                    ),
                 ),
                 resources=client.V1ResourceRequirements(
                     limits={"cpu": "500m", "memory": "512Mi"},
-                    requests={"cpu": "200m", "memory": "256Mi"}
+                    requests={"cpu": "200m", "memory": "256Mi"},
                 ),
                 volume_mounts=[
                     client.V1VolumeMount(
-                        name="shared-logs",
-                        mount_path="/tracee-output"
+                        name="shared-logs", mount_path="/tracee-output"
                     )
-                ]
+                ],
             )
             containers.append(profiler_container)
 
@@ -176,13 +176,13 @@ class SandboxManager:
                 labels={
                     "app": "vexxy-premium",
                     "component": "sandbox",
-                    "job-id": job_id
+                    "job-id": job_id,
                 },
                 annotations={
                     "vexxy.dev/image-ref": image_ref,
                     "vexxy.dev/image-digest": image_digest,
-                    "vexxy.dev/created-at": datetime.utcnow().isoformat()
-                }
+                    "vexxy.dev/created-at": datetime.utcnow().isoformat(),
+                },
             ),
             spec=client.V1JobSpec(
                 ttl_seconds_after_finished=settings.k8s_job_ttl_seconds,
@@ -193,7 +193,7 @@ class SandboxManager:
                         labels={
                             "app": "vexxy-premium",
                             "component": "sandbox",
-                            "job-id": job_id
+                            "job-id": job_id,
                         }
                     ),
                     spec=client.V1PodSpec(
@@ -207,19 +207,16 @@ class SandboxManager:
                         volumes=[
                             client.V1Volume(
                                 name="shared-logs",
-                                empty_dir=client.V1EmptyDirVolumeSource()
+                                empty_dir=client.V1EmptyDirVolumeSource(),
                             )
-                        ]
-                    )
-                )
-            )
+                        ],
+                    ),
+                ),
+            ),
         )
 
         try:
-            self.batch_v1.create_namespaced_job(
-                namespace=self.namespace,
-                body=job
-            )
+            self.batch_v1.create_namespaced_job(namespace=self.namespace, body=job)
             logger.info(f"Created sandbox job {job_name} in namespace {self.namespace}")
             return job_name
 
@@ -239,8 +236,7 @@ class SandboxManager:
         """
         try:
             job = self.batch_v1.read_namespaced_job(
-                name=job_name,
-                namespace=self.namespace
+                name=job_name, namespace=self.namespace
             )
 
             status = "unknown"
@@ -259,8 +255,14 @@ class SandboxManager:
                 "active": job.status.active or 0,
                 "succeeded": job.status.succeeded or 0,
                 "failed": job.status.failed or 0,
-                "start_time": job.status.start_time.isoformat() if job.status.start_time else None,
-                "completion_time": job.status.completion_time.isoformat() if job.status.completion_time else None
+                "start_time": (
+                    job.status.start_time.isoformat() if job.status.start_time else None
+                ),
+                "completion_time": (
+                    job.status.completion_time.isoformat()
+                    if job.status.completion_time
+                    else None
+                ),
             }
 
         except ApiException as e:
@@ -283,8 +285,7 @@ class SandboxManager:
         try:
             # Find pod for this job
             pods = self.core_v1.list_namespaced_pod(
-                namespace=self.namespace,
-                label_selector=f"job-name={job_name}"
+                namespace=self.namespace, label_selector=f"job-name={job_name}"
             )
 
             if not pods.items:
@@ -298,7 +299,7 @@ class SandboxManager:
                 name=pod_name,
                 namespace=self.namespace,
                 container=container,
-                tail_lines=1000  # Last 1000 lines
+                tail_lines=1000,  # Last 1000 lines
             )
 
             return logs
@@ -319,7 +320,7 @@ class SandboxManager:
             self.batch_v1.delete_namespaced_job(
                 name=job_name,
                 namespace=self.namespace,
-                propagation_policy="Foreground"  # Wait for pods to be deleted
+                propagation_policy="Foreground",  # Wait for pods to be deleted
             )
             logger.info(f"Deleted sandbox job {job_name}")
 
@@ -330,7 +331,7 @@ class SandboxManager:
                 logger.error(f"Failed to delete job {job_name}: {e}")
                 raise RuntimeError(f"Failed to delete job: {e}")
 
-    def list_jobs(self, label_selector: str = None) -> List[Dict]:
+    def list_jobs(self, label_selector: str | None = None) -> List[Dict]:
         """
         List sandbox jobs
 
@@ -343,19 +344,21 @@ class SandboxManager:
         try:
             jobs = self.batch_v1.list_namespaced_job(
                 namespace=self.namespace,
-                label_selector=label_selector or "app=vexxy-premium"
+                label_selector=label_selector or "app=vexxy-premium",
             )
 
             result = []
             for job in jobs.items:
-                result.append({
-                    "name": job.metadata.name,
-                    "job_id": job.metadata.labels.get("job-id"),
-                    "created_at": job.metadata.creation_timestamp.isoformat(),
-                    "active": job.status.active or 0,
-                    "succeeded": job.status.succeeded or 0,
-                    "failed": job.status.failed or 0,
-                })
+                result.append(
+                    {
+                        "name": job.metadata.name,
+                        "job_id": job.metadata.labels.get("job-id"),
+                        "created_at": job.metadata.creation_timestamp.isoformat(),
+                        "active": job.status.active or 0,
+                        "succeeded": job.status.succeeded or 0,
+                        "failed": job.status.failed or 0,
+                    }
+                )
 
             return result
 

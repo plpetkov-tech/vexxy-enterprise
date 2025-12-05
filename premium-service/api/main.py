@@ -2,35 +2,38 @@
 Main FastAPI application for Premium VEX Service
 TILT LIVE UPDATE TEST - Should reload automatically!
 """
+
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import datetime
-from uuid import UUID
 import logging
+import math
+from typing import Any, Dict
+from uuid import UUID
 
 from config.settings import settings
 from models import get_db, PremiumAnalysisJob, JobStatus
+from api import billing, webhooks
 from .schemas import (
     AnalysisRequest,
     AnalysisJobResponse,
     AnalysisStatusResponse,
     AnalysisResults,
-    HealthResponse,
-    JobStatusEnum
+    JobStatusEnum,
 )
 from exceptions import (
     JobNotFoundError,
     InvalidJobStateError,
     DatabaseError,
-    InternalServiceError
+    InternalServiceError,
 )
 from middleware import (
     error_handler_middleware,
     correlation_id_middleware,
-    logging_middleware
+    logging_middleware,
 )
 from middleware.logging_middleware import configure_json_logging
 from utils.kubernetes_config import load_kubernetes_config
@@ -41,7 +44,7 @@ if settings.environment == "production":
 else:
     logging.basicConfig(
         level=settings.log_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
 logger = logging.getLogger(__name__)
@@ -75,7 +78,6 @@ app.add_middleware(
 )
 
 # Include routers
-from api import billing, webhooks
 app.include_router(billing.router)
 app.include_router(webhooks.router)
 
@@ -90,43 +92,53 @@ async def startup_event():
             "event": "startup",
             "service": settings.service_name,
             "version": settings.version,
-            "environment": settings.environment
-        }
+            "environment": settings.environment,
+        },
     )
 
     # Load Kubernetes configuration once at startup
     # This must happen before any Kubernetes-related services are instantiated
     try:
-        logger.info("Loading Kubernetes configuration...", extra={"event": "k8s_config_load_start"})
+        logger.info(
+            "Loading Kubernetes configuration...",
+            extra={"event": "k8s_config_load_start"},
+        )
         load_kubernetes_config(in_cluster=settings.k8s_in_cluster)
-        logger.info("Kubernetes configuration loaded successfully", extra={"event": "k8s_config_load_success"})
+        logger.info(
+            "Kubernetes configuration loaded successfully",
+            extra={"event": "k8s_config_load_success"},
+        )
     except Exception as e:
         logger.error(
             f"Kubernetes configuration loading failed: {e}",
             extra={
                 "event": "k8s_config_load_failed",
                 "error": str(e),
-                "error_type": type(e).__name__
+                "error_type": type(e).__name__,
             },
-            exc_info=True
+            exc_info=True,
         )
         # Don't exit - allow app to start but Kubernetes-dependent features will fail
         # This enables graceful degradation
 
     # Initialize database with proper error handling
     from models.database import init_db
+
     try:
         init_db()
-        logger.info("Database initialized successfully", extra={"event": "database_init_success"})
+        logger.info(
+            "Database initialized successfully",
+            extra={"event": "database_init_success"},
+        )
     except Exception as e:
         logger.error(
             f"Database initialization failed: {e}",
             extra={
                 "event": "database_init_failed",
                 "error": str(e),
-                "error_type": type(e).__name__
+                "error_type": type(e).__name__,
             },
-            exc_info=True
+            exc_info=True,
         )
         # Don't exit - allow app to start but health check will fail
         # This enables graceful degradation and better visibility
@@ -134,15 +146,21 @@ async def startup_event():
     # Verify Kubescape availability (should be pre-installed via dev-kind.sh)
     try:
         from services import KubescapeService
-        logger.info("Checking Kubescape availability...", extra={"event": "kubescape_check_start"})
+
+        logger.info(
+            "Checking Kubescape availability...",
+            extra={"event": "kubescape_check_start"},
+        )
 
         kubescape_service = KubescapeService()
         if kubescape_service.is_kubescape_installed():
-            logger.info("Kubescape is available", extra={"event": "kubescape_available"})
+            logger.info(
+                "Kubescape is available", extra={"event": "kubescape_available"}
+            )
         else:
             logger.warning(
                 "Kubescape is not available - ensure it is installed in the cluster (run: ./dev-kind.sh start)",
-                extra={"event": "kubescape_not_available"}
+                extra={"event": "kubescape_not_available"},
             )
     except Exception as e:
         logger.warning(
@@ -150,31 +168,34 @@ async def startup_event():
             extra={
                 "event": "kubescape_check_failed",
                 "error": str(e),
-                "error_type": type(e).__name__
-            }
+                "error_type": type(e).__name__,
+            },
         )
 
     # Verify OWASP ZAP availability (should be pre-installed via dev-kind.sh)
     try:
         from services import ZAPService
-        logger.info("Checking OWASP ZAP availability...", extra={"event": "zap_check_start"})
+
+        logger.info(
+            "Checking OWASP ZAP availability...", extra={"event": "zap_check_start"}
+        )
 
         # Verify ZAP is accessible
         zap_service = ZAPService(
             zap_host=settings.zap_host,
             zap_port=settings.zap_port,
-            zap_api_key=settings.zap_api_key
+            zap_api_key=settings.zap_api_key,
         )
 
         if zap_service.is_zap_available():
             logger.info(
                 "OWASP ZAP is available and ready for security scanning",
-                extra={"event": "zap_available", "zap_host": settings.zap_host}
+                extra={"event": "zap_available", "zap_host": settings.zap_host},
             )
         else:
             logger.warning(
                 "OWASP ZAP is not available - ensure it is installed in the cluster (run: ./dev-kind.sh start)",
-                extra={"event": "zap_not_available", "zap_host": settings.zap_host}
+                extra={"event": "zap_not_available", "zap_host": settings.zap_host},
             )
 
     except Exception as e:
@@ -183,8 +204,8 @@ async def startup_event():
             extra={
                 "event": "zap_check_failed",
                 "error": str(e),
-                "error_type": type(e).__name__
-            }
+                "error_type": type(e).__name__,
+            },
         )
 
 
@@ -216,7 +237,7 @@ async def health_check(request: Request, db: Session = Depends(get_db)):
         "service": settings.service_name,
         "version": settings.version,
         "timestamp": datetime.utcnow().isoformat(),
-        "checks": {}
+        "checks": {},
     }
 
     if correlation_id:
@@ -229,24 +250,27 @@ async def health_check(request: Request, db: Session = Depends(get_db)):
         db.execute(text("SELECT 1"))
         health_status["checks"]["database"] = {
             "status": "healthy",
-            "message": "Database connection OK"
+            "message": "Database connection OK",
         }
-        logger.debug("Health check: database OK", extra={"correlation_id": correlation_id})
+        logger.debug(
+            "Health check: database OK", extra={"correlation_id": correlation_id}
+        )
     except Exception as e:
         overall_healthy = False
         health_status["checks"]["database"] = {
             "status": "unhealthy",
-            "message": f"Database connection failed: {str(e)}"
+            "message": f"Database connection failed: {str(e)}",
         }
         logger.error(
             f"Health check: database failed: {e}",
             extra={"correlation_id": correlation_id, "error": str(e)},
-            exc_info=True
+            exc_info=True,
         )
 
     # Check Redis/Celery
     try:
         from workers.celery_app import celery_app
+
         celery_inspect = celery_app.control.inspect()
 
         # Quick ping with timeout
@@ -255,40 +279,39 @@ async def health_check(request: Request, db: Session = Depends(get_db)):
             health_status["checks"]["celery"] = {
                 "status": "healthy",
                 "message": "Celery workers available",
-                "workers": len(stats)
+                "workers": len(stats),
             }
             logger.debug(
                 f"Health check: Celery OK ({len(stats)} workers)",
-                extra={"correlation_id": correlation_id, "worker_count": len(stats)}
+                extra={"correlation_id": correlation_id, "worker_count": len(stats)},
             )
         else:
             overall_healthy = False
             health_status["checks"]["celery"] = {
                 "status": "unhealthy",
-                "message": "No Celery workers available"
+                "message": "No Celery workers available",
             }
             logger.warning(
                 "Health check: No Celery workers available",
-                extra={"correlation_id": correlation_id}
+                extra={"correlation_id": correlation_id},
             )
     except Exception as e:
         overall_healthy = False
         health_status["checks"]["celery"] = {
             "status": "unhealthy",
-            "message": f"Celery check failed: {str(e)}"
+            "message": f"Celery check failed: {str(e)}",
         }
         logger.error(
             f"Health check: Celery failed: {e}",
             extra={"correlation_id": correlation_id, "error": str(e)},
-            exc_info=True
+            exc_info=True,
         )
 
     # Set overall status
     if not overall_healthy:
         health_status["status"] = "degraded"
         return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content=health_status
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=health_status
         )
 
     return health_status
@@ -299,12 +322,9 @@ async def health_check(request: Request, db: Session = Depends(get_db)):
     f"{settings.api_prefix}/analysis/submit",
     response_model=AnalysisJobResponse,
     status_code=status.HTTP_201_CREATED,
-    tags=["Analysis"]
+    tags=["Analysis"],
 )
-async def submit_analysis(
-    request: AnalysisRequest,
-    db: Session = Depends(get_db)
-):
+async def submit_analysis(request: AnalysisRequest, db: Session = Depends(get_db)):
     """
     Submit container image for premium reachability analysis
 
@@ -320,7 +340,7 @@ async def submit_analysis(
 
     **Quota enforcement** based on subscription tier
     """
-    from middleware.authentication import get_current_user, AuthContext
+    from middleware.authentication import get_current_user
     from services.billing import QuotaService
     from exceptions import QuotaExceededError
 
@@ -329,18 +349,25 @@ async def submit_analysis(
     # Remove this try-except block to enforce authentication
     try:
         auth = await get_current_user(
-            credentials=None,  # Will be extracted from request
-            db=db
+            credentials=None, db=db  # Will be extracted from request
         )
         organization_id = auth.organization_id
         logger.info(f"Authenticated request from org {organization_id}")
     except Exception as e:
         # Fallback to admin org for development (backward compatibility)
         # TODO: Remove this fallback to enforce authentication in production
-        logger.warning(f"Using default admin organization ID (authentication not enforced): {e}")
-        organization_id = "00000000-0000-0001-0000-000000000001"  # Admin Organization
+        logger.warning(
+            f"Using default admin organization ID (authentication not enforced): {e}"
+        )
+        organization_id = UUID("00000000-0000-0001-0000-000000000001")  # Admin Organization
 
-    logger.info(f"Received analysis request for {request.image_ref}@{request.image_digest}")
+    logger.info(
+        f"Received analysis request for {request.image_ref}@{request.image_digest}"
+    )
+    logger.info(f"DEBUG: Request config: {request.config.model_dump() if request.config else {}}")
+
+    # DEBUG: Log the entire request body
+    logger.info(f"DEBUG: Full request body: {request.model_dump()}")
 
     # Quota check
     quota_service = QuotaService(db)
@@ -348,7 +375,9 @@ async def submit_analysis(
 
     if not allowed:
         logger.warning(f"Quota check failed for org {organization_id}: {error_message}")
-        raise QuotaExceededError("analysis", 0, 0)  # Will be properly formatted by error handler
+        raise QuotaExceededError(
+            "analysis", 0, 0
+        )  # Will be properly formatted by error handler
 
     # Create analysis job
     job = PremiumAnalysisJob(
@@ -356,11 +385,12 @@ async def submit_analysis(
         image_ref=request.image_ref,
         image_digest=request.image_digest,
         sbom_id=request.sbom_id,
-        config=request.config.model_dump(),
+        profile=request.profile.value if request.profile else "standard",
+        config=request.config.model_dump() if request.config else {},
         status=JobStatus.QUEUED,
         priority=0,  # TODO: Set based on tier
         progress_percent=0,
-        current_phase="pending"
+        current_phase="pending",
     )
 
     db.add(job)
@@ -372,20 +402,52 @@ async def submit_analysis(
     # Queue the job in Celery for Kubescape-based analysis
     from workers.tasks import run_premium_analysis
 
+    # DEBUG: Log raw request details
+    logger.info(f"[DEBUG] AGGRESSIVE: Raw request.config object: {request.config}")
+    logger.info(f"[DEBUG] AGGRESSIVE: Request.config type: {type(request.config)}")
+    logger.info(
+        f"[DEBUG] AGGRESSIVE: Request.config dict: {request.config.__dict__ if hasattr(request.config, '__dict__') else 'no __dict__'}"
+    )
+
     # Prepare config with analysis settings
-    config = {}
+    config: Dict[str, Any] = {}
     if request.config:
         config = request.config.model_dump()
+        logger.info(f"[DEBUG] AGGRESSIVE: After model_dump(): {config}")
 
-    # Set default analysis duration if not specified (5 minutes)
-    if "analysis_duration" not in config:
-        config["analysis_duration"] = 300
+    # DEBUG: Log received config
+    logger.info(f"[DEBUG] Received analysis config from request: {config}")
+    logger.info(f"[DEBUG] Config keys: {list(config.keys())}")
+
+    requested_duration = (
+        config.get("analysis_duration") or config.get("test_timeout") or 300
+    )
+    # Clamp to supported bounds
+    analysis_duration = max(60, min(int(requested_duration), 3600))
+    config["analysis_duration"] = analysis_duration
+    config["test_timeout"] = analysis_duration
+
+    logger.info(
+        f"[DEBUG] Normalized analysis duration: requested={requested_duration}, normalized={analysis_duration}"
+    )
+
+    # Clamp + share runtime expectations
+    time_buffer = max(20, min(int(analysis_duration * 0.3), 40))
+    config["analysis_time_buffer"] = time_buffer
+
+    # Persist normalized config for auditing
+    job.config = config
+    db.commit()
+    db.refresh(job)
+
+    # DEBUG: Log final config being sent to worker
+    logger.info(f"[DEBUG] Final config for worker: {config}")
 
     run_premium_analysis.delay(
         job_id=str(job.id),
         image_ref=request.image_ref,
         image_digest=request.image_digest,
-        config=config
+        config=config,
     )
 
     logger.info(f"Queued analysis job {job.id} in Celery")
@@ -393,25 +455,32 @@ async def submit_analysis(
     # Increment usage counter
     quota_service.increment_usage(organization_id)
 
+    from api.schemas import AnalysisProfileEnum as SchemaProfileEnum
+
+    estimated_minutes = max(1, math.ceil((analysis_duration + time_buffer) / 60))
+
     return AnalysisJobResponse(
         job_id=job.id,
         status=JobStatusEnum(job.status.value),
         image_ref=job.image_ref,
         image_digest=job.image_digest,
-        estimated_duration_minutes=10,
-        created_at=job.created_at
+        profile=(
+            SchemaProfileEnum(job.profile)
+            if job.profile
+            else SchemaProfileEnum.STANDARD
+        ),
+        estimated_duration_minutes=estimated_minutes,
+        created_at=job.created_at,
     )
 
 
 @app.get(
     f"{settings.api_prefix}/analysis/{{job_id}}/status",
     response_model=AnalysisStatusResponse,
-    tags=["Analysis"]
+    tags=["Analysis"],
 )
 async def get_analysis_status(
-    job_id: UUID,
-    request: Request,
-    db: Session = Depends(get_db)
+    job_id: UUID, request: Request, db: Session = Depends(get_db)
 ):
     """
     Get status of analysis job
@@ -421,14 +490,14 @@ async def get_analysis_status(
     correlation_id = getattr(request.state, "correlation_id", None)
     logger.info(
         f"Status check for job {job_id}",
-        extra={"correlation_id": correlation_id, "job_id": str(job_id)}
+        extra={"correlation_id": correlation_id, "job_id": str(job_id)},
     )
 
     try:
         # Query database
-        job = db.query(PremiumAnalysisJob).filter(
-            PremiumAnalysisJob.id == job_id
-        ).first()
+        job = (
+            db.query(PremiumAnalysisJob).filter(PremiumAnalysisJob.id == job_id).first()
+        )
 
         if not job:
             raise JobNotFoundError(job_id=str(job_id))
@@ -441,15 +510,19 @@ async def get_analysis_status(
             started_at=job.started_at,
             completed_at=job.completed_at,
             error_message=job.error_message,
-            sandbox_id=job.sandbox_id
+            sandbox_id=job.sandbox_id,
         )
     except JobNotFoundError:
         raise
     except Exception as e:
         logger.error(
             f"Failed to get status for job {job_id}: {e}",
-            extra={"correlation_id": correlation_id, "job_id": str(job_id), "error": str(e)},
-            exc_info=True
+            extra={
+                "correlation_id": correlation_id,
+                "job_id": str(job_id),
+                "error": str(e),
+            },
+            exc_info=True,
         )
         raise DatabaseError(operation="query job status", error=str(e))
 
@@ -457,12 +530,10 @@ async def get_analysis_status(
 @app.get(
     f"{settings.api_prefix}/analysis/{{job_id}}/results",
     response_model=AnalysisResults,
-    tags=["Analysis"]
+    tags=["Analysis"],
 )
 async def get_analysis_results(
-    job_id: UUID,
-    request: Request,
-    db: Session = Depends(get_db)
+    job_id: UUID, request: Request, db: Session = Depends(get_db)
 ):
     """
     Get results of completed analysis
@@ -472,14 +543,14 @@ async def get_analysis_results(
     correlation_id = getattr(request.state, "correlation_id", None)
     logger.info(
         f"Results request for job {job_id}",
-        extra={"correlation_id": correlation_id, "job_id": str(job_id)}
+        extra={"correlation_id": correlation_id, "job_id": str(job_id)},
     )
 
     try:
         # Query database
-        job = db.query(PremiumAnalysisJob).filter(
-            PremiumAnalysisJob.id == job_id
-        ).first()
+        job = (
+            db.query(PremiumAnalysisJob).filter(PremiumAnalysisJob.id == job_id).first()
+        )
 
         if not job:
             raise JobNotFoundError(job_id=str(job_id))
@@ -488,7 +559,7 @@ async def get_analysis_results(
             raise InvalidJobStateError(
                 job_id=str(job_id),
                 current_state=job.status.value,
-                required_state="COMPLETE"
+                required_state="COMPLETE",
             )
 
         return AnalysisResults(
@@ -501,27 +572,26 @@ async def get_analysis_results(
             security_findings=job.security_findings,
             generated_vex_id=job.generated_vex_id,
             created_at=job.created_at,
-            completed_at=job.completed_at
+            completed_at=job.completed_at,
         )
     except (JobNotFoundError, InvalidJobStateError):
         raise
     except Exception as e:
         logger.error(
             f"Failed to get results for job {job_id}: {e}",
-            extra={"correlation_id": correlation_id, "job_id": str(job_id), "error": str(e)},
-            exc_info=True
+            extra={
+                "correlation_id": correlation_id,
+                "job_id": str(job_id),
+                "error": str(e),
+            },
+            exc_info=True,
         )
         raise DatabaseError(operation="query job results", error=str(e))
 
 
-@app.delete(
-    f"{settings.api_prefix}/analysis/{{job_id}}",
-    tags=["Analysis"]
-)
+@app.delete(f"{settings.api_prefix}/analysis/{{job_id}}", tags=["Analysis"])
 async def cancel_analysis(
-    job_id: UUID,
-    request: Request,
-    db: Session = Depends(get_db)
+    job_id: UUID, request: Request, db: Session = Depends(get_db)
 ):
     """
     Cancel running analysis job
@@ -531,14 +601,14 @@ async def cancel_analysis(
     correlation_id = getattr(request.state, "correlation_id", None)
     logger.info(
         f"Cancel request for job {job_id}",
-        extra={"correlation_id": correlation_id, "job_id": str(job_id)}
+        extra={"correlation_id": correlation_id, "job_id": str(job_id)},
     )
 
     try:
         # Query database
-        job = db.query(PremiumAnalysisJob).filter(
-            PremiumAnalysisJob.id == job_id
-        ).first()
+        job = (
+            db.query(PremiumAnalysisJob).filter(PremiumAnalysisJob.id == job_id).first()
+        )
 
         if not job:
             raise JobNotFoundError(job_id=str(job_id))
@@ -547,7 +617,7 @@ async def cancel_analysis(
             raise InvalidJobStateError(
                 job_id=str(job_id),
                 current_state=job.status.value,
-                required_state="QUEUED, RUNNING, or ANALYZING"
+                required_state="QUEUED, RUNNING, or ANALYZING",
             )
 
         # Update status
@@ -559,34 +629,35 @@ async def cancel_analysis(
 
         logger.info(
             f"Cancelled analysis job {job_id}",
-            extra={"correlation_id": correlation_id, "job_id": str(job_id)}
+            extra={"correlation_id": correlation_id, "job_id": str(job_id)},
         )
 
         return {
             "status": "cancelled",
             "job_id": str(job_id),
-            "message": "Analysis job cancelled successfully"
+            "message": "Analysis job cancelled successfully",
         }
     except (JobNotFoundError, InvalidJobStateError):
         raise
     except Exception as e:
         logger.error(
             f"Failed to cancel job {job_id}: {e}",
-            extra={"correlation_id": correlation_id, "job_id": str(job_id), "error": str(e)},
-            exc_info=True
+            extra={
+                "correlation_id": correlation_id,
+                "job_id": str(job_id),
+                "error": str(e),
+            },
+            exc_info=True,
         )
         raise DatabaseError(operation="cancel job", error=str(e))
 
 
-@app.get(
-    f"{settings.api_prefix}/analysis",
-    tags=["Analysis"]
-)
+@app.get(f"{settings.api_prefix}/analysis", tags=["Analysis"])
 async def list_analyses(
     skip: int = 0,
     limit: int = 50,
-    status_filter: JobStatusEnum = None,
-    db: Session = Depends(get_db)
+    status_filter: JobStatusEnum | None = None,
+    db: Session = Depends(get_db),
 ):
     """
     List analysis jobs
@@ -597,7 +668,9 @@ async def list_analyses(
 
     # Filter by status if provided
     if status_filter:
-        query = query.filter(PremiumAnalysisJob.status == JobStatus(status_filter.value))
+        query = query.filter(
+            PremiumAnalysisJob.status == JobStatus(status_filter.value)
+        )
 
     # Order by created_at desc
     query = query.order_by(PremiumAnalysisJob.created_at.desc())
@@ -610,18 +683,12 @@ async def list_analyses(
         "total": total,
         "skip": skip,
         "limit": limit,
-        "jobs": [job.to_dict() for job in jobs]
+        "jobs": [job.to_dict() for job in jobs],
     }
 
 
-@app.get(
-    f"{settings.api_prefix}/vex/{{vex_id}}",
-    tags=["VEX Documents"]
-)
-async def get_vex_document(
-    vex_id: UUID,
-    request: Request
-):
+@app.get(f"{settings.api_prefix}/vex/{{vex_id}}", tags=["VEX Documents"])
+async def get_vex_document(vex_id: UUID, request: Request):
     """
     Retrieve VEX document by ID
 
@@ -633,7 +700,7 @@ async def get_vex_document(
     correlation_id = getattr(request.state, "correlation_id", None)
     logger.info(
         f"VEX document request for {vex_id}",
-        extra={"correlation_id": correlation_id, "vex_id": str(vex_id)}
+        extra={"correlation_id": correlation_id, "vex_id": str(vex_id)},
     )
 
     try:
@@ -645,12 +712,12 @@ async def get_vex_document(
         if not vex_document:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"VEX document with ID {vex_id} not found"
+                detail=f"VEX document with ID {vex_id} not found",
             )
 
         logger.info(
             f"Retrieved VEX document {vex_id}",
-            extra={"correlation_id": correlation_id, "vex_id": str(vex_id)}
+            extra={"correlation_id": correlation_id, "vex_id": str(vex_id)},
         )
 
         return vex_document
@@ -660,22 +727,27 @@ async def get_vex_document(
     except Exception as e:
         logger.error(
             f"Failed to retrieve VEX document {vex_id}: {e}",
-            extra={"correlation_id": correlation_id, "vex_id": str(vex_id), "error": str(e)},
-            exc_info=True
+            extra={
+                "correlation_id": correlation_id,
+                "vex_id": str(vex_id),
+                "error": str(e),
+            },
+            exc_info=True,
         )
         raise InternalServiceError(
             message=f"Failed to retrieve VEX document: {str(e)}",
-            service="evidence_storage"
+            service="evidence_storage",
         )
 
 
 # Run with uvicorn
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
         "api.main:app",
         host=settings.api_host,
         port=settings.api_port,
         reload=settings.environment == "development",
-        log_level=settings.log_level.lower()
+        log_level=settings.log_level.lower(),
     )

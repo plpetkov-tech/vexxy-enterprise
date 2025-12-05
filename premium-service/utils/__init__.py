@@ -1,6 +1,7 @@
 """
 Utility functions for VEXxy Premium Service
 """
+
 from .retry import retry_with_backoff, RetryConfig
 from .kubernetes_config import (
     load_kubernetes_config,
@@ -10,7 +11,7 @@ from .kubernetes_config import (
     get_apps_v1_api,
     get_batch_v1_api,
     get_custom_objects_api,
-    get_apiextensions_v1_api
+    get_apiextensions_v1_api,
 )
 
 __all__ = [
@@ -23,5 +24,5 @@ __all__ = [
     "get_apps_v1_api",
     "get_batch_v1_api",
     "get_custom_objects_api",
-    "get_apiextensions_v1_api"
+    "get_apiextensions_v1_api",
 ]

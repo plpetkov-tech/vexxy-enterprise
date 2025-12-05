@@ -3,6 +3,7 @@ SBOM Integration Service
 
 Integrates with VEXxy core backend to fetch SBOMs and vulnerability data.
 """
+
 from typing import Dict, List, Optional
 import logging
 import httpx
@@ -26,7 +27,7 @@ class SBOMService:
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={"Authorization": f"Bearer {self.api_key}"} if self.api_key else {},
-            timeout=30.0
+            timeout=30.0,
         )
 
     async def fetch_sbom(self, sbom_id: UUID) -> Optional[Dict]:
@@ -44,7 +45,9 @@ class SBOMService:
             response.raise_for_status()
 
             sbom = response.json()
-            logger.info(f"Fetched SBOM {sbom_id}: {len(sbom.get('components', []))} components")
+            logger.info(
+                f"Fetched SBOM {sbom_id}: {len(sbom.get('components', []))} components"
+            )
             return sbom
 
         except httpx.HTTPStatusError as e:
@@ -72,7 +75,9 @@ class SBOMService:
             response.raise_for_status()
 
             vulnerabilities = response.json()
-            logger.info(f"Fetched {len(vulnerabilities)} vulnerabilities for SBOM {sbom_id}")
+            logger.info(
+                f"Fetched {len(vulnerabilities)} vulnerabilities for SBOM {sbom_id}"
+            )
             return vulnerabilities
 
         except httpx.HTTPStatusError as e:
@@ -85,7 +90,9 @@ class SBOMService:
             logger.error(f"Error fetching vulnerabilities: {e}", exc_info=True)
             raise
 
-    async def fetch_sbom_by_image(self, image_ref: str, image_digest: str) -> Optional[Dict]:
+    async def fetch_sbom_by_image(
+        self, image_ref: str, image_digest: str
+    ) -> Optional[Dict]:
         """
         Fetch SBOM by image reference
 
@@ -99,10 +106,7 @@ class SBOMService:
         try:
             response = await self.client.get(
                 "/api/v1/sboms/search",
-                params={
-                    "image_ref": image_ref,
-                    "image_digest": image_digest
-                }
+                params={"image_ref": image_ref, "image_digest": image_digest},
             )
             response.raise_for_status()
 
@@ -134,19 +138,23 @@ class SBOMService:
         components = []
 
         # CycloneDX format
-        if 'bomFormat' in sbom and sbom['bomFormat'] == 'CycloneDX':
-            components = sbom.get('components', [])
+        if "bomFormat" in sbom and sbom["bomFormat"] == "CycloneDX":
+            components = sbom.get("components", [])
 
         # SPDX format
-        elif 'spdxVersion' in sbom:
-            packages = sbom.get('packages', [])
+        elif "spdxVersion" in sbom:
+            packages = sbom.get("packages", [])
             for pkg in packages:
-                components.append({
-                    'name': pkg.get('name'),
-                    'version': pkg.get('versionInfo'),
-                    'purl': pkg.get('externalRefs', [{}])[0].get('referenceLocator'),
-                    'type': pkg.get('packageType', 'library')
-                })
+                components.append(
+                    {
+                        "name": pkg.get("name"),
+                        "version": pkg.get("versionInfo"),
+                        "purl": pkg.get("externalRefs", [{}])[0].get(
+                            "referenceLocator"
+                        ),
+                        "type": pkg.get("packageType", "library"),
+                    }
+                )
 
         logger.debug(f"Parsed {len(components)} components from SBOM")
         return components
@@ -164,15 +172,15 @@ class SBOMService:
         vulnerabilities = []
 
         # CycloneDX with vulnerabilities
-        if 'vulnerabilities' in sbom:
-            vulnerabilities = sbom['vulnerabilities']
+        if "vulnerabilities" in sbom:
+            vulnerabilities = sbom["vulnerabilities"]
 
         # Components with vulnerabilities
-        components = sbom.get('components', [])
+        components = sbom.get("components", [])
         for component in components:
-            comp_vulns = component.get('vulnerabilities', [])
+            comp_vulns = component.get("vulnerabilities", [])
             for vuln in comp_vulns:
-                vuln['affects'] = [component]  # Add component reference
+                vuln["affects"] = [component]  # Add component reference
                 vulnerabilities.append(vuln)
 
         logger.debug(f"Extracted {len(vulnerabilities)} vulnerabilities from SBOM")
@@ -209,8 +217,8 @@ class MockSBOMService(SBOMService):
                     "name": "libcurl",
                     "version": "7.68.0",
                     "purl": "pkg:deb/debian/libcurl@7.68.0",
-                }
-            ]
+                },
+            ],
         }
 
     async def fetch_vulnerabilities(self, sbom_id: UUID) -> List[Dict]:
@@ -219,41 +227,21 @@ class MockSBOMService(SBOMService):
         return [
             {
                 "id": "CVE-2024-12345",
-                "source": {
-                    "name": "NVD"
-                },
-                "ratings": [
-                    {
-                        "score": 7.5,
-                        "severity": "high"
-                    }
-                ],
-                "affects": [
-                    {
-                        "ref": "pkg:deb/debian/openssl@1.1.1"
-                    }
-                ]
+                "source": {"name": "NVD"},
+                "ratings": [{"score": 7.5, "severity": "high"}],
+                "affects": [{"ref": "pkg:deb/debian/openssl@1.1.1"}],
             },
             {
                 "id": "CVE-2024-67890",
-                "source": {
-                    "name": "NVD"
-                },
-                "ratings": [
-                    {
-                        "score": 5.0,
-                        "severity": "medium"
-                    }
-                ],
-                "affects": [
-                    {
-                        "ref": "pkg:deb/debian/libcurl@7.68.0"
-                    }
-                ]
-            }
+                "source": {"name": "NVD"},
+                "ratings": [{"score": 5.0, "severity": "medium"}],
+                "affects": [{"ref": "pkg:deb/debian/libcurl@7.68.0"}],
+            },
         ]
 
-    async def fetch_sbom_by_image(self, image_ref: str, image_digest: str) -> Optional[Dict]:
+    async def fetch_sbom_by_image(
+        self, image_ref: str, image_digest: str
+    ) -> Optional[Dict]:
         """Return mock SBOM for any image"""
         logger.info(f"Using mock SBOM for {image_ref}")
-        return await self.fetch_sbom(UUID('00000000-0000-0000-0000-000000000000'))
+        return await self.fetch_sbom(UUID("00000000-0000-0000-0000-000000000000"))

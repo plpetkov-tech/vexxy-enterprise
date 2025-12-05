@@ -3,12 +3,13 @@ JWT Authentication Middleware
 
 Handles JWT token validation and user/organization context extraction.
 """
+
 from typing import Optional
 import logging
 from datetime import datetime, timedelta
 
 import jwt
-from fastapi import Header, Depends, HTTPException
+from fastapi import Header, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
@@ -39,11 +40,7 @@ class AuthContext:
     """
 
     def __init__(
-        self,
-        user_id: UUID,
-        organization_id: UUID,
-        email: str,
-        is_admin: bool = False
+        self, user_id: UUID, organization_id: UUID, email: str, is_admin: bool = False
     ):
         self.user_id = user_id
         self.organization_id = organization_id
@@ -92,7 +89,7 @@ class AuthService:
         organization_id: UUID,
         email: str,
         is_admin: bool = False,
-        expires_delta: Optional[timedelta] = None
+        expires_delta: Optional[timedelta] = None,
     ) -> str:
         """
         Create a JWT access token
@@ -122,9 +119,7 @@ class AuthService:
         }
 
         token = jwt.encode(
-            payload,
-            settings.jwt_secret_key,
-            algorithm=settings.jwt_algorithm
+            payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm
         )
 
         return token
@@ -145,9 +140,7 @@ class AuthService:
         """
         try:
             payload = jwt.decode(
-                token,
-                settings.jwt_secret_key,
-                algorithms=[settings.jwt_algorithm]
+                token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm]
             )
             return payload
 
@@ -189,7 +182,7 @@ class AuthService:
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ) -> AuthContext:
     """
     FastAPI dependency for getting current authenticated user
@@ -237,16 +230,12 @@ async def get_current_user(
     logger.info(f"Authenticated user {email} for org {org_id}")
 
     return AuthContext(
-        user_id=user_id,
-        organization_id=org_id,
-        email=email,
-        is_admin=is_admin
+        user_id=user_id, organization_id=org_id, email=email, is_admin=is_admin
     )
 
 
 async def get_optional_user(
-    authorization: Optional[str] = Header(None),
-    db: Session = Depends(get_db)
+    authorization: Optional[str] = Header(None), db: Session = Depends(get_db)
 ) -> Optional[AuthContext]:
     """
     FastAPI dependency for optional authentication
@@ -289,10 +278,7 @@ async def get_optional_user(
             return None
 
         return AuthContext(
-            user_id=user_id,
-            organization_id=org_id,
-            email=email,
-            is_admin=is_admin
+            user_id=user_id, organization_id=org_id, email=email, is_admin=is_admin
         )
 
     except Exception as e:

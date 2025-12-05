@@ -1,6 +1,7 @@
 """
 API endpoint tests
 """
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -15,8 +16,7 @@ from config.settings import settings
 SQLALCHEMY_DATABASE_URL = "sqlite:///./test.db"
 
 engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False}
+    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
 )
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -60,11 +60,8 @@ def test_submit_analysis():
         json={
             "image_ref": "nginx:latest",
             "image_digest": "sha256:4c0fdaa8b6341bfdeca5f18f7a2a65e6f4c7e37e32c66c62a7f0c6b9e4e71e5e",
-            "config": {
-                "enable_fuzzing": True,
-                "test_timeout": 300
-            }
-        }
+            "config": {"enable_fuzzing": True, "test_timeout": 300},
+        },
     )
     assert response.status_code == 201
     data = response.json()
@@ -80,8 +77,8 @@ def test_submit_analysis_invalid_digest():
         json={
             "image_ref": "nginx:latest",
             "image_digest": "invalid-digest",  # Invalid format
-            "config": {}
-        }
+            "config": {},
+        },
     )
     assert response.status_code == 422  # Validation error
 
@@ -93,8 +90,8 @@ def test_get_analysis_status():
         f"{settings.api_prefix}/analysis/submit",
         json={
             "image_ref": "nginx:latest",
-            "image_digest": "sha256:4c0fdaa8b6341bfdeca5f18f7a2a65e6f4c7e37e32c66c62a7f0c6b9e4e71e5e"
-        }
+            "image_digest": "sha256:4c0fdaa8b6341bfdeca5f18f7a2a65e6f4c7e37e32c66c62a7f0c6b9e4e71e5e",
+        },
     )
     job_id = submit_response.json()["job_id"]
 
@@ -120,8 +117,8 @@ def test_get_analysis_results_not_complete():
         f"{settings.api_prefix}/analysis/submit",
         json={
             "image_ref": "nginx:latest",
-            "image_digest": "sha256:4c0fdaa8b6341bfdeca5f18f7a2a65e6f4c7e37e32c66c62a7f0c6b9e4e71e5e"
-        }
+            "image_digest": "sha256:4c0fdaa8b6341bfdeca5f18f7a2a65e6f4c7e37e32c66c62a7f0c6b9e4e71e5e",
+        },
     )
     job_id = submit_response.json()["job_id"]
 
@@ -137,8 +134,8 @@ def test_cancel_analysis():
         f"{settings.api_prefix}/analysis/submit",
         json={
             "image_ref": "nginx:latest",
-            "image_digest": "sha256:4c0fdaa8b6341bfdeca5f18f7a2a65e6f4c7e37e32c66c62a7f0c6b9e4e71e5e"
-        }
+            "image_digest": "sha256:4c0fdaa8b6341bfdeca5f18f7a2a65e6f4c7e37e32c66c62a7f0c6b9e4e71e5e",
+        },
     )
     job_id = submit_response.json()["job_id"]
 
@@ -158,8 +155,8 @@ def test_list_analyses():
             f"{settings.api_prefix}/analysis/submit",
             json={
                 "image_ref": f"nginx:{i}",
-                "image_digest": "sha256:4c0fdaa8b6341bfdeca5f18f7a2a65e6f4c7e37e32c66c62a7f0c6b9e4e71e5e"
-            }
+                "image_digest": "sha256:4c0fdaa8b6341bfdeca5f18f7a2a65e6f4c7e37e32c66c62a7f0c6b9e4e71e5e",
+            },
         )
 
     # List them
@@ -175,8 +172,7 @@ def test_list_analyses():
 def test_list_analyses_with_filter():
     """Test listing with status filter"""
     response = client.get(
-        f"{settings.api_prefix}/analysis",
-        params={"status_filter": "queued"}
+        f"{settings.api_prefix}/analysis", params={"status_filter": "queued"}
     )
     assert response.status_code == 200
     data = response.json()

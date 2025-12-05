@@ -4,20 +4,20 @@ Kubescape-based Task Implementation
 Uses Kubescape for runtime analysis instead of manual Tracee profiling.
 This is the real implementation that works with actual container images.
 """
+
 from datetime import datetime
 import logging
+import subprocess
 from typing import Dict, List, Optional
-import json
+from uuid import UUID
 
 from models import JobStatus
-
-logger = logging.getLogger(__name__)
-
-# Initialize services (lazy initialization for KubescapeService)
 from services import (
     KubescapeService,
     EvidenceStorage,
 )
+
+logger = logging.getLogger(__name__)
 
 # Lazy initialization to avoid loading kube config at import time
 _kubescape_service = None
@@ -64,15 +64,14 @@ def ensure_kubescape_installed() -> bool:
         logger.info("Kubescape is installed and ready")
         return True
 
-    logger.error("Kubescape is not installed. It should have been installed during service startup.")
+    logger.error(
+        "Kubescape is not installed. It should have been installed during service startup."
+    )
     return False
 
 
 def deploy_workload_for_analysis(
-    job,
-    image_ref: str,
-    image_digest: str,
-    config: dict
+    job, image_ref: str, image_digest: str, config: dict
 ) -> str:
     """
     Deploy workload that Kubescape will analyze
@@ -86,14 +85,16 @@ def deploy_workload_for_analysis(
     Returns:
         deployment_name: Name of created deployment
     """
-    logger.info(f"Deploying workload for Kubescape analysis: {image_ref}@{image_digest}")
+    logger.info(
+        f"Deploying workload for Kubescape analysis: {image_ref}@{image_digest}"
+    )
 
     kubescape_service = get_kubescape_service()
     deployment_name = kubescape_service.deploy_workload_for_analysis(
         job_id=str(job.id),
         image_ref=image_ref,
         image_digest=image_digest,
-        job_config=config
+        job_config=config,
     )
 
     logger.info(f"Deployment created: {deployment_name}")
@@ -114,6 +115,7 @@ def wait_for_workload_ready(deployment_name: str, timeout: int = 120) -> bool:
     logger.info(f"Waiting for deployment {deployment_name} to be ready...")
 
     import time
+
     start_time = time.time()
     last_status = None
 
@@ -122,32 +124,32 @@ def wait_for_workload_ready(deployment_name: str, timeout: int = 120) -> bool:
         status = kubescape_service.get_deployment_status(deployment_name)
         last_status = status
 
-        if status['status'] == 'ready':
+        if status["status"] == "ready":
             logger.info(f"Deployment {deployment_name} is ready")
             return True
 
         # Log detailed failure info if available
-        if 'failure_details' in status:
-            failure_details = status['failure_details']
+        if "failure_details" in status:
+            failure_details = status["failure_details"]
 
             # Check for container failures
-            if failure_details.get('container_statuses'):
-                for container in failure_details['container_statuses']:
-                    if not container.get('ready'):
-                        container_name = container.get('container_name', 'unknown')
-                        state = container.get('state', 'unknown')
-                        reason = container.get('reason', 'N/A')
+            if failure_details.get("container_statuses"):
+                for container in failure_details["container_statuses"]:
+                    if not container.get("ready"):
+                        container_name = container.get("container_name", "unknown")
+                        state = container.get("state", "unknown")
+                        reason = container.get("reason", "N/A")
 
                         logger.warning(
                             f"Container {container_name} not ready: state={state}, reason={reason}",
                             extra={
                                 "deployment_name": deployment_name,
-                                "container_status": container
-                            }
+                                "container_status": container,
+                            },
                         )
 
         logger.debug(f"Deployment status: {status}")
-        time.sleep(5)
+        time.sleep(2)  # Reduced from 5s to 2s for faster detection
 
     # Log final failure details on timeout
     logger.error(
@@ -155,15 +157,15 @@ def wait_for_workload_ready(deployment_name: str, timeout: int = 120) -> bool:
         extra={
             "deployment_name": deployment_name,
             "timeout": timeout,
-            "final_status": last_status
-        }
+            "final_status": last_status,
+        },
     )
 
     # Log specific failure reasons if available
-    if last_status and 'failure_details' in last_status:
+    if last_status and "failure_details" in last_status:
         failure_summary = []
-        for container in last_status['failure_details'].get('container_statuses', []):
-            if not container.get('ready'):
+        for container in last_status["failure_details"].get("container_statuses", []):
+            if not container.get("ready"):
                 failure_summary.append(
                     f"{container.get('container_name')}: {container.get('reason', 'Unknown')}"
                 )
@@ -175,8 +177,7 @@ def wait_for_workload_ready(deployment_name: str, timeout: int = 120) -> bool:
 
 
 def wait_for_kubescape_analysis(
-    deployment_name: str,
-    analysis_duration: int = 300
+    deployment_name: str, analysis_duration: int = 300
 ) -> bool:
     """
     Wait for Kubescape to complete runtime analysis
@@ -184,19 +185,23 @@ def wait_for_kubescape_analysis(
     Args:
         deployment_name: Name of deployment being analyzed
         analysis_duration: How long to wait for analysis (seconds)
+                          Note: This timeout is already calculated with appropriate buffer
+                          by the tasks.py orchestrator, so we use it directly
 
     Returns:
         True if analysis completed, False if timeout
     """
-    logger.info(f"Waiting for Kubescape runtime analysis (duration: {analysis_duration}s)...")
+    logger.info(
+        f"Waiting for Kubescape runtime analysis (duration: {analysis_duration}s)..."
+    )
 
-    # Add buffer time for Kubescape to process
-    timeout = analysis_duration + 120
+    # Use the timeout directly - tasks.py already includes appropriate buffer
+    # via the time_budget system (analysis_duration + adaptive buffer)
+    timeout = analysis_duration
 
     kubescape_service = get_kubescape_service()
     success = kubescape_service.wait_for_kubescape_analysis(
-        deployment_name=deployment_name,
-        timeout_seconds=timeout
+        deployment_name=deployment_name, timeout_seconds=timeout
     )
 
     if success:
@@ -207,12 +212,230 @@ def wait_for_kubescape_analysis(
     return success
 
 
+def verify_application_responding(
+    deployment_name: str,
+    namespace: str,
+    ports: List[int],
+    health_check_path: str = "/",
+    timeout: int = 60,
+) -> Dict:
+    """
+    Verify that the application is actually responding on specified ports
+
+    This is critical for security scanning - ZAP needs a responding application to scan.
+
+    Args:
+        deployment_name: Name of the deployment
+        namespace: Kubernetes namespace
+        ports: List of ports to check
+        health_check_path: HTTP path to check (default: "/")
+        timeout: Maximum time to wait for app to respond (seconds)
+
+    Returns:
+        Dict with:
+        {
+            "responding": bool,  # True if ANY port responds
+            "ports_status": {port: {"status": str, "error": str}},
+            "attempts": int,
+            "first_response_time": float
+        }
+    """
+    import requests
+    import time
+
+    logger.info(f"Verifying application is responding on ports {ports}...")
+
+    service_name = f"{deployment_name}-svc"
+    service_host = f"{service_name}.{namespace}.svc.cluster.local"
+
+    ports_status = {}
+    start_time = time.time()
+    attempts = 0
+    first_response_time = None
+
+    # Try each port with exponential backoff
+    max_attempts_per_port = 12  # ~60 seconds total with exponential backoff
+    base_delay = 1
+
+    for port in ports:
+        port_responding = False
+
+        for attempt in range(max_attempts_per_port):
+            attempts += 1
+
+            # Try both HTTP and HTTPS
+            for protocol in ["http", "https"]:
+                url = f"{protocol}://{service_host}:{port}{health_check_path}"
+
+                try:
+                    logger.debug(
+                        f"Health check attempt {attempt + 1}/{max_attempts_per_port}: {url}"
+                    )
+
+                    response = requests.get(
+                        url,
+                        timeout=5,
+                        verify=False,  # Skip SSL verification for self-signed certs
+                        allow_redirects=True,
+                    )
+
+                    # Any HTTP response (even 404, 500) means app is responding
+                    logger.info(
+                        f"Application responding on {protocol}://{service_host}:{port} "
+                        f"(status: {response.status_code})"
+                    )
+
+                    ports_status[port] = {
+                        "status": "responding",
+                        "protocol": protocol,
+                        "status_code": response.status_code,
+                        "error": None,
+                    }
+
+                    if first_response_time is None:
+                        first_response_time = time.time() - start_time
+
+                    port_responding = True
+                    break  # Successfully connected
+
+                except requests.exceptions.SSLError as e:
+                    # SSL error might mean HTTPS is configured but with self-signed cert
+                    # Try to continue anyway
+                    logger.debug(f"SSL error on {url}: {e}")
+                    if protocol == "https":
+                        # Still consider it responding if we get SSL error
+                        ports_status[port] = {
+                            "status": "responding",
+                            "protocol": "https",
+                            "status_code": None,
+                            "error": f"SSL cert issue: {str(e)[:100]}",
+                        }
+                        port_responding = True
+                        break
+
+                except requests.exceptions.ConnectionError as e:
+                    logger.debug(f"Connection error on {url}: {e}")
+                    continue  # Try next protocol
+
+                except requests.exceptions.Timeout as e:
+                    logger.debug(f"Timeout on {url}: {e}")
+                    continue  # Try next protocol
+
+                except Exception as e:
+                    logger.debug(f"Unexpected error on {url}: {e}")
+                    continue  # Try next protocol
+
+            if port_responding:
+                break  # Port is responding, move to next port
+
+            # Check if we've exceeded timeout
+            if time.time() - start_time > timeout:
+                logger.warning(f"Health check timeout after {timeout}s")
+                break
+
+            # Exponential backoff
+            delay = min(base_delay * (2**attempt), 10)  # Cap at 10 seconds
+            time.sleep(delay)
+
+        # Record final status for this port
+        if not port_responding:
+            ports_status[port] = {
+                "status": "not_responding",
+                "protocol": None,
+                "status_code": None,
+                "error": f"No response after {max_attempts_per_port} attempts",
+            }
+
+    # Determine overall status
+    responding_ports = [
+        p for p, status in ports_status.items() if status["status"] == "responding"
+    ]
+
+    result = {
+        "responding": len(responding_ports) > 0,
+        "ports_status": ports_status,
+        "attempts": attempts,
+        "first_response_time": first_response_time,
+        "responding_ports": responding_ports,
+        "non_responding_ports": [p for p in ports if p not in responding_ports],
+    }
+
+    if result["responding"]:
+        logger.info(
+            f"Application health check PASSED. "
+            f"Responding on ports: {responding_ports}. "
+            f"First response after {first_response_time:.2f}s."
+        )
+    else:
+        logger.error(
+            f"Application health check FAILED. "
+            f"No response on any of the ports {ports} after {timeout}s. "
+            f"Total attempts: {attempts}."
+        )
+
+    return result
+
+
+def collect_container_logs(
+    deployment_name: str,
+    namespace: str,
+    container_name: str = "target",
+    tail_lines: int = 500,
+) -> str:
+    """
+    Collect container startup logs for diagnostics
+
+    Args:
+        deployment_name: Name of the deployment
+        namespace: Kubernetes namespace
+        container_name: Name of the container (default: "target")
+        tail_lines: Number of log lines to collect
+
+    Returns:
+        Container logs as string
+    """
+    try:
+        result = subprocess.run(
+            [
+                "kubectl",
+                "logs",
+                f"deployment/{deployment_name}",
+                "-n",
+                namespace,
+                "-c",
+                container_name,
+                f"--tail={tail_lines}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        if result.returncode == 0:
+            logger.debug(
+                f"Collected {len(result.stdout)} bytes of logs from {container_name}"
+            )
+            return result.stdout
+        else:
+            error_msg = result.stderr or "Unknown error"
+            logger.warning(f"Failed to collect logs from {container_name}: {error_msg}")
+            return f"Failed to collect logs: {error_msg}"
+
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Timeout collecting logs from {container_name}")
+        return "Log collection timed out after 30s"
+    except Exception as e:
+        logger.error(f"Error collecting logs from {container_name}: {e}")
+        return f"Error collecting logs: {str(e)}"
+
+
 def run_owasp_zap_scan(
     deployment_name: str,
     namespace: str,
     ports: List[int],
-    job_id: str,
-    enable_fuzzing: bool = True
+    job_id: UUID,
+    enable_fuzzing: bool = True,
+    time_budget: Optional[int] = None,
 ) -> Optional[Dict]:
     """
     Run OWASP ZAP security scan against the deployed workload
@@ -247,7 +470,7 @@ def run_owasp_zap_scan(
         zap_service = ZAPService(
             zap_host=settings.zap_host,
             zap_port=settings.zap_port,
-            zap_api_key=settings.zap_api_key
+            zap_api_key=settings.zap_api_key,
         )
 
         # Check if ZAP is available
@@ -256,18 +479,26 @@ def run_owasp_zap_scan(
             return {
                 "status": "skipped",
                 "reason": "zap_not_available",
-                "scanned_urls": []
+                "scanned_urls": [],
             }
 
         # Scan the Kubernetes service
         # Service DNS name: <deployment>-svc.<namespace>.svc.cluster.local
         service_name = f"{deployment_name}-svc"
 
+        effective_budget = max(60, (time_budget - 30) if time_budget else 600)
+        scan_depth = "medium"
+        if effective_budget <= 180:
+            scan_depth = "quick"
+        elif effective_budget >= 900:
+            scan_depth = "thorough"
+
         results = zap_service.scan_kubernetes_service(
             service_name=service_name,
             namespace=namespace,
             ports=ports,
-            scan_depth="medium"  # Could be made configurable
+            scan_depth=scan_depth,
+            time_budget=effective_budget,
         )
 
         # Store results as evidence
@@ -294,21 +525,18 @@ def run_owasp_zap_scan(
                 "medium_risk": 0,
                 "low_risk": 0,
                 "informational": 0,
-                "total_alerts": 0
-            }
+                "total_alerts": 0,
+            },
         }
         # Still store the error result as evidence
         try:
             evidence_storage.store_fuzzing_results(job_id, error_result)
-        except:
+        except Exception:
             pass
         return error_result
 
 
-def extract_tracee_profiling(
-    deployment_name: str,
-    job_id: str
-) -> Optional[Dict]:
+def extract_tracee_profiling(deployment_name: str, job_id: UUID) -> Optional[Dict]:
     """
     Extract Tracee profiling data and parse into execution profile
 
@@ -334,6 +562,7 @@ def extract_tracee_profiling(
 
         # Parse Tracee output using ProfilerService
         from services import ProfilerService
+
         profiler_service = ProfilerService()
         execution_profile = profiler_service.parse_tracee_logs(tracee_output)
 
@@ -346,10 +575,7 @@ def extract_tracee_profiling(
 
 
 def extract_kubescape_results(
-    deployment_name: str,
-    image_digest: str,
-    job_id: str,
-    enable_profiling: bool = True
+    deployment_name: str, image_digest: str, job_id: UUID, enable_profiling: bool = True
 ) -> Dict:
     """
     Extract VEX, filtered SBOM, and Tracee profiling data
@@ -368,16 +594,14 @@ def extract_kubescape_results(
     # Extract both VEX and filtered SBOM from Kubescape
     kubescape_service = get_kubescape_service()
     vex_document, filtered_sbom = kubescape_service.extract_kubescape_analysis(
-        deployment_name=deployment_name,
-        image_digest=image_digest
+        deployment_name=deployment_name, image_digest=image_digest
     )
 
     # Note: VEX document will be stored AFTER branding/enhancement in the main task
     # Here we just extract and return the raw Kubescape VEX
-    vex_id = None
     if vex_document:
         # Handle case where statements field is null (Go nil slice marshals to JSON null)
-        statements = vex_document.get('statements') or []
+        statements = vex_document.get("statements") or []
         logger.info(f"Extracted runtime VEX document: {len(statements)} statements")
     else:
         logger.warning("No VEX document generated by Kubescape")
@@ -385,7 +609,7 @@ def extract_kubescape_results(
     if filtered_sbom:
         evidence_storage.store_filtered_sbom(job_id, filtered_sbom)
         # Handle case where components field is null (Go nil slice marshals to JSON null)
-        components = filtered_sbom.get('components') or []
+        components = filtered_sbom.get("components") or []
         component_count = len(components)
         logger.info(f"Stored filtered SBOM: {component_count} relevant components")
     else:
@@ -402,7 +626,7 @@ def extract_kubescape_results(
         "tracee_profile": tracee_profile,
         "has_vex": vex_document is not None,
         "has_filtered_sbom": filtered_sbom is not None,
-        "has_profiling": tracee_profile is not None
+        "has_profiling": tracee_profile is not None,
     }
 
 
@@ -493,7 +717,7 @@ def convert_vex_statements_to_reachability(vex_document: Dict) -> List[Dict]:
                 "confidence_score": confidence_score,
                 "reason": reason,
                 "vulnerable_files": vulnerable_files,
-                "executed_files": []  # Will be populated from Tracee data in Phase 2
+                "executed_files": [],  # Will be populated from Tracee data in Phase 2
             }
 
             reachability_results.append(reachability_result)
@@ -502,7 +726,9 @@ def convert_vex_statements_to_reachability(vex_document: Dict) -> List[Dict]:
             logger.error(f"Failed to convert VEX statement: {e}", exc_info=True)
             continue
 
-    logger.info(f"Converted {len(reachability_results)} VEX statements to reachability results")
+    logger.info(
+        f"Converted {len(reachability_results)} VEX statements to reachability results"
+    )
     return reachability_results
 
 
@@ -522,9 +748,9 @@ def _calculate_confidence_score(status: str, justification: str) -> float:
     # Base confidence for Kubescape runtime analysis
     base_confidence = {
         "not_affected": 0.95,  # Very high confidence when Kubescape says not affected
-        "affected": 0.90,      # High confidence for confirmed affected
+        "affected": 0.90,  # High confidence for confirmed affected
         "under_investigation": 0.60,  # Medium confidence for unclear cases
-        "unknown": 0.50        # Low confidence for unknown
+        "unknown": 0.50,  # Low confidence for unknown
     }
 
     confidence = base_confidence.get(status, 0.50)
@@ -533,7 +759,7 @@ def _calculate_confidence_score(status: str, justification: str) -> float:
     high_confidence_justifications = [
         "vulnerable_code_not_present",
         "vulnerable_code_not_in_execute_path",
-        "component_not_present"
+        "component_not_present",
     ]
 
     if justification in high_confidence_justifications:
@@ -542,12 +768,12 @@ def _calculate_confidence_score(status: str, justification: str) -> float:
     return round(confidence, 2)
 
 
-def process_kubescape_vex(vex_document: Dict, job) -> Dict:
+def process_kubescape_vex(vex_document: Dict | None, job) -> Dict:
     """
     Process Kubescape VEX document into our format
 
     Args:
-        vex_document: Kubescape VEX document
+        vex_document: Kubescape VEX document (can be None)
         job: Analysis job
 
     Returns:
@@ -561,7 +787,7 @@ def process_kubescape_vex(vex_document: Dict, job) -> Dict:
             "author": "VEXxy Premium Analysis Service",
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "version": 1,
-            "statements": []
+            "statements": [],
         }
 
     # Kubescape VEX is already in OpenVEX format
@@ -583,7 +809,7 @@ def process_kubescape_vex(vex_document: Dict, job) -> Dict:
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "analysis_method": "kubescape_runtime",
         "analysis_engine": "kubescape",  # Credit the underlying engine
-        "confidence_level": "high"  # Kubescape provides high-confidence reachability
+        "confidence_level": "high",  # Kubescape provides high-confidence reachability
     }
 
     # Handle case where statements field is null (Go nil slice marshals to JSON null)
@@ -593,7 +819,7 @@ def process_kubescape_vex(vex_document: Dict, job) -> Dict:
     return enhanced_vex
 
 
-def extract_sbom_component_data(filtered_sbom: Dict) -> Dict:
+def extract_sbom_component_data(filtered_sbom: Dict | None) -> Dict:
     """
     Extract runtime component data from filtered SBOM
 
@@ -601,18 +827,14 @@ def extract_sbom_component_data(filtered_sbom: Dict) -> Dict:
     actually used/loaded at runtime.
 
     Args:
-        filtered_sbom: Filtered SBOM from Kubescape
+        filtered_sbom: Filtered SBOM from Kubescape (can be None)
 
     Returns:
         Dict with extracted component info (files, libraries)
     """
     if not filtered_sbom:
         logger.warning("No filtered SBOM to process")
-        return {
-            "loaded_components": [],
-            "component_files": [],
-            "component_count": 0
-        }
+        return {"loaded_components": [], "component_files": [], "component_count": 0}
 
     components = filtered_sbom.get("components") or []
     loaded_components = []
@@ -623,7 +845,6 @@ def extract_sbom_component_data(filtered_sbom: Dict) -> Dict:
             # Extract component name and version
             name = component.get("name", "")
             version = component.get("version", "")
-            purl = component.get("purl", "")
 
             # Extract file paths from component properties
             properties = component.get("properties") or []
@@ -652,17 +873,17 @@ def extract_sbom_component_data(filtered_sbom: Dict) -> Dict:
     return {
         "loaded_components": loaded_components,
         "component_files": component_files,
-        "component_count": len(loaded_components)
+        "component_count": len(loaded_components),
     }
 
 
-def generate_analysis_summary(vex_document: Dict, filtered_sbom: Dict) -> Dict:
+def generate_analysis_summary(vex_document: Dict | None, filtered_sbom: Dict | None) -> Dict:
     """
     Generate analysis summary from Kubescape results
 
     Args:
-        vex_document: VEX document
-        filtered_sbom: Filtered SBOM
+        vex_document: VEX document (can be None)
+        filtered_sbom: Filtered SBOM (can be None)
 
     Returns:
         Summary dict
@@ -674,16 +895,20 @@ def generate_analysis_summary(vex_document: Dict, filtered_sbom: Dict) -> Dict:
     # Count VEX statuses
     not_affected = sum(1 for s in statements if s.get("status") == "not_affected")
     affected = sum(1 for s in statements if s.get("status") == "affected")
-    under_investigation = sum(1 for s in statements if s.get("status") == "under_investigation")
+    under_investigation = sum(
+        1 for s in statements if s.get("status") == "under_investigation"
+    )
 
     return {
         "total_cves_analyzed": len(statements),
         "not_affected": not_affected,
         "affected": affected,
         "under_investigation": under_investigation,
-        "total_components_in_image": len(components),  # This is filtered (relevant) count
+        "total_components_in_image": len(
+            components
+        ),  # This is filtered (relevant) count
         "analysis_method": "hybrid_kubescape_tracee_sbom",
-        "confidence": "high"
+        "confidence": "high",
     }
 
 
@@ -702,3 +927,398 @@ def cleanup_workload(deployment_name: str):
         logger.info(f"Workload {deployment_name} cleaned up")
     except Exception as e:
         logger.error(f"Failed to cleanup workload {deployment_name}: {e}")
+
+
+def cleanup_kubescape_crds(deployment_name: str):
+    """
+    Delete Kubescape CRDs after extracting VEX results.
+
+    CRITICAL: These CRDs consume etcd storage and must be cleaned up
+    to prevent etcd quota exhaustion at scale. After 1000 analyses without
+    cleanup, etcd can fill up causing complete cluster failure.
+
+    Args:
+        deployment_name: Name of the deployment (used as CRD name)
+    """
+    logger.info(f"Cleaning up Kubescape CRDs for {deployment_name}")
+    kubescape_service = get_kubescape_service()
+
+    # Delete VEX CRD
+    try:
+        kubescape_service.delete_custom_resource(
+            group="spdx.softwarecomposition.kubescape.io",
+            version="v1beta1",
+            plural="openvulnerabilityexchangecontainers",
+            name=deployment_name,
+            namespace="vexxy-sandbox",
+        )
+        logger.info(f"Deleted VEX CRD for {deployment_name}")
+    except Exception as e:
+        logger.warning(
+            f"Failed to delete VEX CRD for {deployment_name}: {e}", exc_info=True
+        )
+
+    # Delete SBOM CRD
+    try:
+        kubescape_service.delete_custom_resource(
+            group="spdx.softwarecomposition.kubescape.io",
+            version="v1beta1",
+            plural="sbomsyftfiltereds",
+            name=deployment_name,
+            namespace="vexxy-sandbox",
+        )
+        logger.info(f"Deleted SBOM CRD for {deployment_name}")
+    except Exception as e:
+        logger.warning(
+            f"Failed to delete SBOM CRD for {deployment_name}: {e}", exc_info=True
+        )
+
+    # Delete Vulnerability Manifest CRD
+    try:
+        kubescape_service.delete_custom_resource(
+            group="spdx.softwarecomposition.kubescape.io",
+            version="v1beta1",
+            plural="vulnerabilitymanifests",
+            name=deployment_name,
+            namespace="vexxy-sandbox",
+        )
+        logger.info(f"Deleted VulnerabilityManifest CRD for {deployment_name}")
+    except Exception as e:
+        logger.warning(
+            f"Failed to delete VulnerabilityManifest for {deployment_name}: {e}",
+            exc_info=True,
+        )
+
+
+def extract_pentest_results(
+    deployment_name: str, namespace: str, job_id: str
+) -> Optional[Dict]:
+    """
+    Extract pentesting results from Kali sidecar container
+
+    Args:
+        deployment_name: Name of the deployment
+        namespace: Kubernetes namespace
+        job_id: Job ID for logging
+
+    Returns:
+        Pentest results dict or None if not available
+    """
+    logger.info(f"Extracting pentest results from {deployment_name}")
+
+    try:
+        kubescape_service = get_kubescape_service()
+
+        # Get pod for this deployment
+        pods = kubescape_service.core_v1.list_namespaced_pod(
+            namespace=namespace, label_selector=f"job-id={job_id}"
+        )
+
+        if not pods.items:
+            logger.warning(f"No pods found for deployment {deployment_name}")
+            return None
+
+        pod_name = pods.items[0].metadata.name
+
+        # Check if pentest sidecar exists
+        pod = pods.items[0]
+        pentest_container = None
+        for container_status in pod.status.container_statuses or []:
+            if container_status.name == "pentest-sidecar":
+                pentest_container = container_status
+                break
+
+        if not pentest_container:
+            logger.info("Pentest sidecar not found (pentesting not enabled)")
+            return None
+
+        # Check container status
+        if pentest_container.state.terminated:
+            exit_code = pentest_container.state.terminated.exit_code
+            if exit_code != 0:
+                logger.warning(f"Pentest sidecar exited with code {exit_code}")
+
+        # Extract results via kubectl exec
+        from kubernetes.stream import stream
+
+        exec_command = [
+            "/bin/sh",
+            "-c",
+            'cat /pentest-output/report.json 2>/dev/null || echo "{}"',
+        ]
+
+        resp = stream(
+            kubescape_service.core_v1.connect_get_namespaced_pod_exec,
+            name=pod_name,
+            namespace=namespace,
+            container="pentest-sidecar",
+            command=exec_command,
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False,
+            _preload_content=True,
+        )
+
+        if not resp or resp == "{}":
+            logger.warning("Pentest results empty or not found")
+            return None
+
+        # Parse JSON
+        import json
+
+        logger.info(f"Raw pentest response (first 500 chars): {resp[:500]}")
+        logger.info(f"Response type: {type(resp)}, length: {len(resp)}")
+        results = json.loads(resp)
+
+        logger.info(
+            f"Pentest results extracted: {len(results.get('results', {}))} tool outputs"
+        )
+        return results
+
+    except Exception as e:
+        logger.error(f"Failed to extract pentest results: {e}", exc_info=True)
+        return None
+
+
+def parse_pentest_to_security_findings(pentest_results: Dict) -> Dict:
+    """
+    Transform pentesting.sh output into SecurityFindings schema
+
+    Args:
+        pentest_results: Raw pentest results from pentesting.sh script
+                        Expected format: {"pentest_report": {"metadata": {...}, "findings": [...]}}
+
+    Returns:
+        Formatted security findings dict matching SecurityFindings schema
+    """
+    alerts = []
+
+    # Extract from actual pentesting.sh output format
+    pentest_report = pentest_results.get("pentest_report", {})
+    findings = pentest_report.get("findings", [])
+    metadata = pentest_report.get("metadata", {})
+
+    logger.info(
+        f"Parsing pentest results: {len(findings)} findings from {metadata.get('scanner', 'unknown')}"
+    )
+
+    # Transform findings to alerts
+    for finding in findings:
+        severity = finding.get("severity", "info").lower()
+
+        # Map severity levels to risk categories expected by frontend
+        risk_map = {
+            "critical": "High",
+            "high": "High",
+            "medium": "Medium",
+            "low": "Low",
+            "info": "Informational",
+            "informational": "Informational",
+        }
+        risk = risk_map.get(severity, "Informational")
+
+        # Create alert in format expected by SecurityFindings schema
+        alert = {
+            "alert_id": f"pentest_{finding.get('title', 'unknown').replace(' ', '_').lower()}",
+            "name": finding.get("title", "Unknown Finding"),
+            "risk": risk,
+            "confidence": "Medium",
+            "description": finding.get("description", ""),
+            "solution": "Review security configuration and apply recommended fixes",
+            "reference": finding.get("cve") or "Pentest Scan",
+        }
+
+        # Add optional fields if present
+        if finding.get("cve"):
+            alert["cveId"] = finding.get("cve")
+        if finding.get("cwe"):
+            alert["cweId"] = finding.get("cwe")
+
+        alerts.append(alert)
+
+    # Count by risk level
+    risk_counts = {"High": 0, "Medium": 0, "Low": 0, "Informational": 0}
+    for alert in alerts:
+        risk_counts[alert["risk"]] += 1
+
+    logger.info(
+        f"Pentest findings parsed: {len(alerts)} total alerts "
+        f"(High: {risk_counts['High']}, Medium: {risk_counts['Medium']}, "
+        f"Low: {risk_counts['Low']}, Info: {risk_counts['Informational']})"
+    )
+
+    return {
+        "scan_type": "pentest",
+        "status": "completed",
+        "scan_duration_seconds": metadata.get("duration_seconds"),
+        "target_urls": [metadata.get("target", "unknown")],
+        "total_alerts": len(alerts),
+        "high_risk": risk_counts["High"],
+        "medium_risk": risk_counts["Medium"],
+        "low_risk": risk_counts["Low"],
+        "informational": risk_counts["Informational"],
+        "alerts": alerts,
+        "scan_timestamp": metadata.get("scan_start"),
+        "scanner_version": metadata.get("scanner", "vexxy-kali-pentester"),
+        "error_message": None,
+    }
+
+
+def check_pentest_container_status(
+    deployment_name: str, namespace: str, job_id: str
+) -> str:
+    """
+    Check pentest sidecar container status
+
+    Args:
+        deployment_name: Name of the deployment
+        namespace: Kubernetes namespace
+        job_id: Job ID
+
+    Returns:
+        Status string: "completed", "failed", "running", "waiting", "not_found", "unknown"
+    """
+    try:
+        kubescape_service = get_kubescape_service()
+        pods = kubescape_service.core_v1.list_namespaced_pod(
+            namespace=namespace, label_selector=f"job-id={job_id}"
+        )
+
+        if not pods.items:
+            return "not_found"
+
+        pod = pods.items[0]
+        for container_status in pod.status.container_statuses or []:
+            if container_status.name == "pentest-sidecar":
+                if container_status.state.terminated:
+                    exit_code = container_status.state.terminated.exit_code
+                    return "completed" if exit_code == 0 else "failed"
+                elif container_status.state.running:
+                    return "running"
+                elif container_status.state.waiting:
+                    return "waiting"
+
+        return "not_found"
+    except Exception as e:
+        logger.error(f"Failed to check pentest status: {e}")
+        return "unknown"
+
+
+def run_pentest_scan(
+    deployment_name: str,
+    namespace: str,
+    ports: List[int],
+    job_id: str,
+    enable_pentesting: bool = True,
+    pentest_timeout: int = 1200,
+) -> Optional[Dict]:
+    """
+    Run pentesting scan and return formatted results with enhanced error handling
+
+    Args:
+        deployment_name: Name of the deployment
+        namespace: Kubernetes namespace
+        ports: List of ports to scan
+        job_id: Job ID for logging
+        enable_pentesting: Whether pentesting is enabled
+        pentest_timeout: Maximum wait time for pentest scan in seconds (default: 1200s / 20 min)
+
+    Returns:
+        Formatted security findings dict, or None if skipped
+    """
+    if not enable_pentesting or not ports:
+        return None
+
+    logger.info(f"Starting pentest scan on {deployment_name} ports {ports}")
+
+    try:
+        # Wait for pentest sidecar to complete
+        import time
+
+        max_wait = pentest_timeout  # Use configurable timeout
+        start_time = time.time()
+        last_logged_status = None
+
+        while time.time() - start_time < max_wait:
+            status = check_pentest_container_status(deployment_name, namespace, job_id)
+
+            # Log status transitions for visibility
+            if status != last_logged_status:
+                elapsed = time.time() - start_time
+                logger.info(
+                    f"Pentest container status: {last_logged_status} -> {status} (elapsed: {elapsed:.1f}s)"
+                )
+                last_logged_status = status
+
+                # Fetch container logs for debugging on failure or waiting states
+                if status in ["waiting", "failed"]:
+                    try:
+                        kubescape_service = get_kubescape_service()
+                        pods = kubescape_service.core_v1.list_namespaced_pod(
+                            namespace=namespace, label_selector=f"job-id={job_id}"
+                        )
+                        if pods.items:
+                            pod_name = pods.items[0].metadata.name
+                            logs = kubescape_service.core_v1.read_namespaced_pod_log(
+                                name=pod_name,
+                                namespace=namespace,
+                                container="pentest-sidecar",
+                                tail_lines=50,
+                            )
+                            logger.error(
+                                f"Pentest sidecar logs (last 50 lines):\n{logs}"
+                            )
+                    except Exception as log_err:
+                        logger.warning(
+                            f"Could not fetch pentest container logs: {log_err}"
+                        )
+
+            if status == "completed":
+                logger.info("Pentest sidecar completed successfully")
+                break
+            elif status == "failed":
+                logger.error("Pentest sidecar failed - check logs above")
+                return {
+                    "status": "failed",
+                    "error": "Pentest container exited with error",
+                }
+            elif status == "not_found":
+                logger.error("Pentest sidecar container not found in pod")
+                return {
+                    "status": "failed",
+                    "error": "Pentest sidecar not found - may not be enabled or configured correctly",
+                }
+
+            time.sleep(10)  # Check every 10 seconds
+
+        # Check if we timed out
+        elapsed_total = time.time() - start_time
+        if elapsed_total >= max_wait:
+            logger.warning(
+                f"Pentest scan timeout after {elapsed_total:.1f}s (max: {max_wait}s)"
+            )
+            return {
+                "status": "failed",
+                "error": f"Pentest scan timeout after {max_wait}s",
+            }
+
+        # Extract and parse results
+        pentest_raw = extract_pentest_results(deployment_name, namespace, job_id)
+
+        if not pentest_raw:
+            logger.warning(
+                "No pentest results available - results file may not have been created"
+            )
+            return {"status": "skipped", "reason": "no_results_found"}
+
+        pentest_findings = parse_pentest_to_security_findings(pentest_raw)
+
+        logger.info(
+            f"Pentest scan completed: {pentest_findings['total_alerts']} alerts found"
+        )
+        return pentest_findings
+
+    except Exception as e:
+        logger.error(f"Pentest scan failed with exception: {e}", exc_info=True)
+        return {"status": "failed", "error": str(e)}

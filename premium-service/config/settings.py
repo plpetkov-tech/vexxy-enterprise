@@ -3,6 +3,7 @@ Premium VEX Service Configuration
 
 Environment-based configuration using pydantic-settings
 """
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
@@ -11,9 +12,7 @@ class Settings(BaseSettings):
     """Application settings"""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=False
+        env_file=".env", env_file_encoding="utf-8", case_sensitive=False
     )
 
     # Service Info
@@ -28,8 +27,9 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql://vexxy:vexxy@localhost:5432/vexxy_premium"
-    database_pool_size: int = 20
-    database_max_overflow: int = 30
+    database_pool_size: int = 50  # Increased for autoscaling workers (up from 20)
+    database_max_overflow: int = 100  # Increased for autoscaling workers (up from 30)
+    database_pool_timeout: int = 30  # Seconds to wait for connection
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
@@ -70,16 +70,24 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
 
     # Stripe Integration (Billing)
-    stripe_secret_key: str = "sk_test_changeme"  # Stripe secret key (sk_test_* for test mode)
-    stripe_publishable_key: str = "pk_test_changeme"  # Stripe publishable key (pk_test_* for test mode)
-    stripe_webhook_secret: str = "whsec_changeme"  # Webhook signing secret from Stripe dashboard
+    stripe_secret_key: str = (
+        "sk_test_changeme"  # Stripe secret key (sk_test_* for test mode)
+    )
+    stripe_publishable_key: str = (
+        "pk_test_changeme"  # Stripe publishable key (pk_test_* for test mode)
+    )
+    stripe_webhook_secret: str = (
+        "whsec_changeme"  # Webhook signing secret from Stripe dashboard
+    )
 
     # VEXxy Core Integration
     vexxy_backend_url: str = "http://localhost:8000"
     vexxy_api_key: Optional[str] = None
 
     # OWASP ZAP Integration
-    zap_host: str = "localhost"  # Use localhost with port-forward, or K8s service DNS if in-cluster
+    zap_host: str = (
+        "localhost"  # Use localhost with port-forward, or K8s service DNS if in-cluster
+    )
     zap_port: int = 8080
     zap_namespace: str = "security"
     zap_api_key: Optional[str] = "vexxy-zap-key"
@@ -89,7 +97,7 @@ class Settings(BaseSettings):
     metrics_port: int = 9090
 
     # Logging
-    log_level: str = "INFO"
+    log_level: str = "DEBUG"
     log_format: str = "json"  # json or text
 
 

@@ -3,6 +3,7 @@ Billing API Endpoints
 
 Provides REST API endpoints for billing, subscriptions, and credit management.
 """
+
 from typing import List, Optional
 from datetime import datetime
 from uuid import UUID
@@ -17,11 +18,11 @@ from models import (
     Subscription,
     BillingEvent,
     SubscriptionTier,
-    SubscriptionStatus
+    SubscriptionStatus,
 )
 from middleware.authentication import get_current_user, AuthContext, require_admin
 from services.billing import BillingService, QuotaService
-from exceptions import UnauthorizedError, ResourceNotFoundError
+from exceptions import ResourceNotFoundError
 
 router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
 
@@ -30,8 +31,10 @@ router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
 # Pydantic Schemas
 # ============================================================================
 
+
 class SubscriptionResponse(BaseModel):
     """Subscription information response"""
+
     id: UUID
     organization_id: UUID
     tier: str
@@ -51,6 +54,7 @@ class SubscriptionResponse(BaseModel):
 
 class CreditBalanceResponse(BaseModel):
     """Credit balance information"""
+
     organization_id: UUID
     credit_balance: int
     organization_name: str
@@ -58,6 +62,7 @@ class CreditBalanceResponse(BaseModel):
 
 class UsageResponse(BaseModel):
     """Usage statistics response"""
+
     organization_id: UUID
     current_period_analyses: int
     current_period_credits_used: int
@@ -70,6 +75,7 @@ class UsageResponse(BaseModel):
 
 class BillingEventResponse(BaseModel):
     """Billing event response"""
+
     id: UUID
     organization_id: UUID
     event_type: str
@@ -84,18 +90,27 @@ class BillingEventResponse(BaseModel):
 
 class CreateSubscriptionRequest(BaseModel):
     """Request to create or upgrade subscription"""
-    tier: str = Field(..., description="Subscription tier: starter, professional, enterprise")
-    payment_method_id: Optional[str] = Field(None, description="Stripe payment method ID")
+
+    tier: str = Field(
+        ..., description="Subscription tier: starter, professional, enterprise"
+    )
+    payment_method_id: Optional[str] = Field(
+        None, description="Stripe payment method ID"
+    )
 
 
 class PurchaseCreditsRequest(BaseModel):
     """Request to purchase credits"""
-    amount: int = Field(..., ge=100, description="Number of credits to purchase (minimum 100)")
+
+    amount: int = Field(
+        ..., ge=100, description="Number of credits to purchase (minimum 100)"
+    )
     payment_method_id: str = Field(..., description="Stripe payment method ID")
 
 
 class TierInfo(BaseModel):
     """Subscription tier information"""
+
     tier: str
     monthly_analysis_limit: Optional[int]
     monthly_credit_limit: Optional[int]
@@ -107,19 +122,21 @@ class TierInfo(BaseModel):
 # API Endpoints
 # ============================================================================
 
+
 @router.get("/subscription", response_model=SubscriptionResponse)
 async def get_subscription(
-    auth: AuthContext = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    auth: AuthContext = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """
     Get current subscription information for the authenticated user's organization
 
     Returns subscription details including tier, limits, and current usage.
     """
-    subscription = db.query(Subscription).filter(
-        Subscription.organization_id == auth.organization_id
-    ).first()
+    subscription = (
+        db.query(Subscription)
+        .filter(Subscription.organization_id == auth.organization_id)
+        .first()
+    )
 
     if not subscription:
         raise ResourceNotFoundError("Subscription", str(auth.organization_id))
@@ -129,8 +146,7 @@ async def get_subscription(
 
 @router.get("/credits", response_model=CreditBalanceResponse)
 async def get_credit_balance(
-    auth: AuthContext = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    auth: AuthContext = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """
     Get current credit balance for the authenticated user's organization
@@ -143,19 +159,17 @@ async def get_credit_balance(
     return CreditBalanceResponse(
         organization_id=org.id,
         credit_balance=org.credit_balance,
-        organization_name=org.name
+        organization_name=org.name,
     )
 
 
 @router.get("/usage", response_model=UsageResponse)
 async def get_usage_stats(
-    auth: AuthContext = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    auth: AuthContext = Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """
     Get usage statistics for the current billing period
     """
-    quota_service = QuotaService(db)
     billing_service = BillingService(db)
 
     usage = billing_service.get_usage_stats(auth.organization_id)
@@ -163,7 +177,9 @@ async def get_usage_stats(
     # Calculate utilization percentage
     utilization = 0.0
     if usage.get("monthly_credit_limit"):
-        utilization = (usage["current_period_credits_used"] / usage["monthly_credit_limit"]) * 100
+        utilization = (
+            usage["current_period_credits_used"] / usage["monthly_credit_limit"]
+        ) * 100
 
     return UsageResponse(
         organization_id=auth.organization_id,
@@ -173,7 +189,7 @@ async def get_usage_stats(
         monthly_credit_limit=usage["monthly_credit_limit"],
         current_period_start=usage["current_period_start"],
         current_period_end=usage["current_period_end"],
-        utilization_percent=round(utilization, 2)
+        utilization_percent=round(utilization, 2),
     )
 
 
@@ -182,18 +198,21 @@ async def get_billing_events(
     limit: int = 50,
     offset: int = 0,
     auth: AuthContext = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Get billing event history for the authenticated user's organization
 
     Returns a paginated list of billing events (credits purchased, analysis costs, etc.)
     """
-    events = db.query(BillingEvent).filter(
-        BillingEvent.organization_id == auth.organization_id
-    ).order_by(
-        BillingEvent.created_at.desc()
-    ).limit(limit).offset(offset).all()
+    events = (
+        db.query(BillingEvent)
+        .filter(BillingEvent.organization_id == auth.organization_id)
+        .order_by(BillingEvent.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+        .all()
+    )
 
     return events
 
@@ -202,7 +221,7 @@ async def get_billing_events(
 async def create_or_upgrade_subscription(
     request: CreateSubscriptionRequest,
     auth: AuthContext = Depends(require_admin),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Create or upgrade subscription (admin only)
@@ -210,7 +229,6 @@ async def create_or_upgrade_subscription(
     Creates a new paid subscription or upgrades an existing subscription to a higher tier.
     Requires admin privileges.
     """
-    billing_service = BillingService(db)
     quota_service = QuotaService(db)
 
     # Validate tier
@@ -219,7 +237,7 @@ async def create_or_upgrade_subscription(
     except KeyError:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid tier: {request.tier}. Valid tiers: starter, professional, enterprise"
+            detail=f"Invalid tier: {request.tier}. Valid tiers: starter, professional, enterprise",
         )
 
     # Get or create organization
@@ -231,9 +249,11 @@ async def create_or_upgrade_subscription(
     tier_config = quota_service.get_tier_limits(tier)
 
     # Get existing subscription
-    subscription = db.query(Subscription).filter(
-        Subscription.organization_id == auth.organization_id
-    ).first()
+    subscription = (
+        db.query(Subscription)
+        .filter(Subscription.organization_id == auth.organization_id)
+        .first()
+    )
 
     if subscription:
         # Upgrade existing subscription
@@ -248,6 +268,7 @@ async def create_or_upgrade_subscription(
     else:
         # Create new subscription
         from datetime import timedelta
+
         now = datetime.utcnow()
 
         subscription = Subscription(
@@ -257,7 +278,7 @@ async def create_or_upgrade_subscription(
             monthly_analysis_limit=tier_config["monthly_analysis_limit"],
             monthly_credit_limit=tier_config["monthly_credit_limit"],
             current_period_start=now,
-            current_period_end=now + timedelta(days=30)
+            current_period_end=now + timedelta(days=30),
         )
         db.add(subscription)
         db.commit()
@@ -272,7 +293,7 @@ async def create_or_upgrade_subscription(
 async def purchase_credits(
     request: PurchaseCreditsRequest,
     auth: AuthContext = Depends(require_admin),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Purchase additional credits (admin only)
@@ -292,14 +313,14 @@ async def purchase_credits(
     new_balance = billing_service.add_credits(
         auth.organization_id,
         request.amount,
-        description=f"Purchased {request.amount} credits for ${cost_usd:.2f}"
+        description=f"Purchased {request.amount} credits for ${cost_usd:.2f}",
     )
 
     return {
         "success": True,
         "credits_purchased": request.amount,
         "cost_usd": cost_usd,
-        "new_balance": new_balance
+        "new_balance": new_balance,
     }
 
 
@@ -315,13 +336,15 @@ async def get_subscription_tiers():
     tiers = []
     for tier in SubscriptionTier:
         tier_config = quota_service.get_tier_limits(tier)
-        tiers.append(TierInfo(
-            tier=tier.value,
-            monthly_analysis_limit=tier_config["monthly_analysis_limit"],
-            monthly_credit_limit=tier_config["monthly_credit_limit"],
-            priority=tier_config["priority"],
-            features=tier_config["features"]
-        ))
+        tiers.append(
+            TierInfo(
+                tier=tier.value,
+                monthly_analysis_limit=tier_config["monthly_analysis_limit"],
+                monthly_credit_limit=tier_config["monthly_credit_limit"],
+                priority=tier_config["priority"],
+                features=tier_config["features"],
+            )
+        )
 
     return tiers
 
@@ -330,7 +353,7 @@ async def get_subscription_tiers():
 async def cancel_subscription(
     at_period_end: bool = True,
     auth: AuthContext = Depends(require_admin),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Cancel subscription (admin only)
@@ -338,9 +361,11 @@ async def cancel_subscription(
     Cancels the organization's subscription. By default, cancels at the end of the
     current billing period. Set at_period_end=false to cancel immediately.
     """
-    subscription = db.query(Subscription).filter(
-        Subscription.organization_id == auth.organization_id
-    ).first()
+    subscription = (
+        db.query(Subscription)
+        .filter(Subscription.organization_id == auth.organization_id)
+        .first()
+    )
 
     if not subscription:
         raise ResourceNotFoundError("Subscription", str(auth.organization_id))
@@ -360,5 +385,7 @@ async def cancel_subscription(
     return {
         "success": True,
         "message": message,
-        "canceled_at": subscription.canceled_at.isoformat() if subscription.canceled_at else None
+        "canceled_at": (
+            subscription.canceled_at.isoformat() if subscription.canceled_at else None
+        ),
     }

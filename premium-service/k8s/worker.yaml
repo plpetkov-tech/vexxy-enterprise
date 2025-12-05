@@ -19,17 +19,17 @@ spec:
       - name: worker
         image: vexxy-premium:latest
         imagePullPolicy: IfNotPresent
-        command: ["celery", "-A", "workers.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+        command: ["celery", "-A", "workers.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
         envFrom:
         - configMapRef:
             name: premium-config
         resources:
           requests:
-            cpu: 200m
-            memory: 512Mi
+            cpu: 1000m      # 1 CPU per worker for autoscaling
+            memory: 2Gi     # 2 GB per worker for autoscaling
           limits:
-            cpu: 1000m
-            memory: 1Gi
+            cpu: 2000m      # Allow burst to 2 CPU
+            memory: 4Gi     # Hard limit at 4 GB
 ---
 apiVersion: apps/v1
 kind: Deployment

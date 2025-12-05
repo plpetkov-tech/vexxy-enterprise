@@ -3,6 +3,7 @@ Request correlation ID middleware
 
 Adds X-Request-ID header to all requests for distributed tracing
 """
+
 import uuid
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request

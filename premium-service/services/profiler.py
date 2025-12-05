@@ -3,10 +3,10 @@ Runtime Profiler Service
 
 Integrates with Tracee for eBPF-based runtime profiling and execution analysis.
 """
+
 from typing import Dict, List, Set, Optional
 import json
 import logging
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class ExecutionProfile:
                 "unique_syscalls": len(self.syscalls),
                 "network_activity": len(self.network_connections) > 0,
                 "child_processes": len(self.processes_spawned),
-            }
+            },
         }
 
 
@@ -64,25 +64,47 @@ class TraceeParser:
 
     # Syscalls that indicate file access
     FILE_SYSCALLS = {
-        'open', 'openat', 'openat2', 'creat',
-        'read', 'readv', 'pread64', 'preadv', 'preadv2',
-        'write', 'writev', 'pwrite64', 'pwritev', 'pwritev2',
-        'stat', 'fstat', 'lstat', 'statx',
-        'access', 'faccessat', 'faccessat2'
+        "open",
+        "openat",
+        "openat2",
+        "creat",
+        "read",
+        "readv",
+        "pread64",
+        "preadv",
+        "preadv2",
+        "write",
+        "writev",
+        "pwrite64",
+        "pwritev",
+        "pwritev2",
+        "stat",
+        "fstat",
+        "lstat",
+        "statx",
+        "access",
+        "faccessat",
+        "faccessat2",
     }
 
     # Syscalls that indicate network activity
     NETWORK_SYSCALLS = {
-        'socket', 'connect', 'accept', 'accept4',
-        'bind', 'listen', 'send', 'recv',
-        'sendto', 'recvfrom', 'sendmsg', 'recvmsg'
+        "socket",
+        "connect",
+        "accept",
+        "accept4",
+        "bind",
+        "listen",
+        "send",
+        "recv",
+        "sendto",
+        "recvfrom",
+        "sendmsg",
+        "recvmsg",
     }
 
     # Syscalls that indicate process spawning
-    PROCESS_SYSCALLS = {
-        'fork', 'vfork', 'clone', 'clone3',
-        'execve', 'execveat'
-    }
+    PROCESS_SYSCALLS = {"fork", "vfork", "clone", "clone3", "execve", "execveat"}
 
     def parse_tracee_output(self, tracee_json: str) -> ExecutionProfile:
         """
@@ -99,7 +121,7 @@ class TraceeParser:
         try:
             # Parse JSON lines (Tracee outputs one JSON object per line)
             events = []
-            for line in tracee_json.strip().split('\n'):
+            for line in tracee_json.strip().split("\n"):
                 if line.strip():
                     try:
                         events.append(json.loads(line))
@@ -114,9 +136,11 @@ class TraceeParser:
 
             # Calculate duration
             if events:
-                timestamps = [e.get('timestamp', 0) for e in events if 'timestamp' in e]
+                timestamps = [e.get("timestamp", 0) for e in events if "timestamp" in e]
                 if timestamps:
-                    profile.duration_seconds = int((max(timestamps) - min(timestamps)) / 1000000000)  # ns to s
+                    profile.duration_seconds = int(
+                        (max(timestamps) - min(timestamps)) / 1000000000
+                    )  # ns to s
 
             # Process each event
             for event in events:
@@ -129,15 +153,17 @@ class TraceeParser:
 
     def _process_event(self, event: Dict, profile: ExecutionProfile):
         """Process a single Tracee event"""
-        event_name = event.get('eventName', '')
+        event_name = event.get("eventName", "")
 
         # Track syscall
         if event_name:
             profile.syscalls.add(event_name)
-            profile.syscall_counts[event_name] = profile.syscall_counts.get(event_name, 0) + 1
+            profile.syscall_counts[event_name] = (
+                profile.syscall_counts.get(event_name, 0) + 1
+            )
 
         # Extract arguments
-        args = event.get('args', [])
+        args = event.get("args", [])
 
         # File access events
         if event_name in self.FILE_SYSCALLS:
@@ -146,18 +172,20 @@ class TraceeParser:
                 profile.files_accessed.add(path)
 
                 # Track file operations
-                profile.file_operations.append({
-                    'syscall': event_name,
-                    'path': path,
-                    'timestamp': event.get('timestamp'),
-                })
+                profile.file_operations.append(
+                    {
+                        "syscall": event_name,
+                        "path": path,
+                        "timestamp": event.get("timestamp"),
+                    }
+                )
 
                 # Separate written files
-                if 'write' in event_name or event_name == 'creat':
+                if "write" in event_name or event_name == "creat":
                     profile.files_written.add(path)
 
                 # Track loaded libraries
-                if path.endswith(('.so', '.so.0', '.so.1', '.so.2')) or '.so.' in path:
+                if path.endswith((".so", ".so.0", ".so.1", ".so.2")) or ".so." in path:
                     profile.loaded_libraries.add(path)
 
         # Network events
@@ -173,7 +201,7 @@ class TraceeParser:
                 profile.processes_spawned.append(process)
 
                 # Track executed binaries
-                if event_name in ['execve', 'execveat']:
+                if event_name in ["execve", "execveat"]:
                     binary = self._extract_binary_path(args)
                     if binary:
                         profile.executed_binaries.add(binary)
@@ -182,21 +210,21 @@ class TraceeParser:
         """Extract file paths from syscall arguments"""
         paths = []
         for arg in args:
-            arg_name = arg.get('name', '')
-            if arg_name in ['pathname', 'filename', 'path', 'name', 'dirfd']:
-                value = arg.get('value')
-                if value and isinstance(value, str) and value.startswith('/'):
+            arg_name = arg.get("name", "")
+            if arg_name in ["pathname", "filename", "path", "name", "dirfd"]:
+                value = arg.get("value")
+                if value and isinstance(value, str) and value.startswith("/"):
                     paths.append(value)
         return paths
 
     def _extract_network_info(self, event: Dict, args: List[Dict]) -> Optional[str]:
         """Extract network connection info"""
         for arg in args:
-            if arg.get('name') == 'addr':
-                addr = arg.get('value', {})
+            if arg.get("name") == "addr":
+                addr = arg.get("value", {})
                 if isinstance(addr, dict):
-                    ip = addr.get('sin_addr', addr.get('sin6_addr'))
-                    port = addr.get('sin_port')
+                    ip = addr.get("sin_addr", addr.get("sin6_addr"))
+                    port = addr.get("sin_port")
                     if ip and port:
                         return f"{ip}:{port}"
         return None
@@ -204,15 +232,15 @@ class TraceeParser:
     def _extract_process_info(self, event: Dict, args: List[Dict]) -> Optional[str]:
         """Extract spawned process info"""
         for arg in args:
-            if arg.get('name') in ['filename', 'pathname']:
-                return arg.get('value')
+            if arg.get("name") in ["filename", "pathname"]:
+                return arg.get("value")
         return None
 
     def _extract_binary_path(self, args: List[Dict]) -> Optional[str]:
         """Extract binary path from exec syscall"""
         for arg in args:
-            if arg.get('name') in ['filename', 'pathname']:
-                path = arg.get('value')
+            if arg.get("name") in ["filename", "pathname"]:
+                path = arg.get("value")
                 if path and isinstance(path, str):
                     return path
         return None
@@ -242,7 +270,9 @@ class ProfilerService:
         logger.info(f"Profile summary: {profile.to_dict()['summary']}")
         return profile
 
-    def analyze_code_coverage(self, profile: ExecutionProfile, sbom_components: List[Dict]) -> float:
+    def analyze_code_coverage(
+        self, profile: ExecutionProfile, sbom_components: List[Dict]
+    ) -> float:
         """
         Estimate code coverage based on executed files
 
@@ -263,8 +293,8 @@ class ProfilerService:
         total_files = set()
         for component in sbom_components:
             # Extract file paths from component
-            if 'purl' in component and 'file' in component['purl']:
-                total_files.add(component['purl'])
+            if "purl" in component and "file" in component["purl"]:
+                total_files.add(component["purl"])
 
         if not total_files:
             # Fallback: use a typical distribution (rough estimate)

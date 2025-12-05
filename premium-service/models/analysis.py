@@ -1,7 +1,18 @@
 """
 Analysis job models
 """
-from sqlalchemy import Column, String, Integer, DateTime, JSON, Enum, Text, BigInteger, ForeignKey
+
+from sqlalchemy import (
+    Column,
+    String,
+    Integer,
+    DateTime,
+    JSON,
+    Enum,
+    Text,
+    BigInteger,
+    ForeignKey,
+)
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from datetime import datetime
 import uuid
@@ -12,6 +23,7 @@ from .database import Base
 
 class JobStatus(str, enum.Enum):
     """Analysis job status"""
+
     QUEUED = "queued"
     RUNNING = "running"
     ANALYZING = "analyzing"
@@ -20,8 +32,18 @@ class JobStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+class AnalysisProfile(str, enum.Enum):
+    """Analysis profile presets"""
+
+    minimal = "minimal"
+    standard = "standard"
+    comprehensive = "comprehensive"
+    custom = "custom"
+
+
 class EvidenceType(str, enum.Enum):
     """Types of evidence collected"""
+
     EXECUTION_TRACE = "execution_trace"
     SYSCALL_LOG = "syscall_log"
     FILE_ACCESS_LOG = "file_access_log"
@@ -29,10 +51,14 @@ class EvidenceType(str, enum.Enum):
     FUZZING_RESULTS = "fuzzing_results"
     CODE_COVERAGE = "code_coverage"
     PROFILER_OUTPUT = "profiler_output"
+    CONTAINER_LOGS = "container_logs"  # NEW: Container startup logs
+    HEALTH_CHECK = "health_check"  # NEW: Application health check results
+    ZAP_SCAN_LOGS = "zap_scan_logs"  # NEW: Detailed ZAP scan logs
 
 
 class PremiumAnalysisJob(Base):
     """Premium analysis job tracking"""
+
     __tablename__ = "premium_analysis_jobs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -44,7 +70,9 @@ class PremiumAnalysisJob(Base):
     sbom_id = Column(UUID(as_uuid=True), nullable=True)
 
     # Job status
-    status = Column(Enum(JobStatus), nullable=False, default=JobStatus.QUEUED, index=True)
+    status = Column(  # type: ignore[var-annotated]
+        Enum(JobStatus), nullable=False, default=JobStatus.QUEUED, index=True
+    )
     priority = Column(Integer, default=0, index=True)
 
     # Progress tracking
@@ -52,12 +80,15 @@ class PremiumAnalysisJob(Base):
     current_phase = Column(String(100))
 
     # Configuration
+    profile = Column(String(20), nullable=True, default="standard")
     config = Column(JSON, nullable=False, default=dict)
 
     # Results
     execution_profile = Column(JSON)
     reachability_results = Column(JSON)
-    security_findings = Column(JSON, nullable=True)  # OWASP ZAP and other security scan results
+    security_findings = Column(
+        JSON, nullable=True
+    )  # OWASP ZAP and other security scan results
     generated_vex_id = Column(UUID(as_uuid=True), nullable=True)
 
     # Sandbox tracking
@@ -92,16 +123,20 @@ class PremiumAnalysisJob(Base):
             "priority": self.priority,
             "progress_percent": self.progress_percent,
             "current_phase": self.current_phase,
+            "profile": self.profile if self.profile else None,
             "config": self.config,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
-            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "completed_at": (
+                self.completed_at.isoformat() if self.completed_at else None
+            ),
             "error_message": self.error_message,
         }
 
 
 class AnalysisEvidence(Base):
     """Evidence collected during analysis"""
+
     __tablename__ = "analysis_evidence"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -109,11 +144,11 @@ class AnalysisEvidence(Base):
         UUID(as_uuid=True),
         ForeignKey("premium_analysis_jobs.id", ondelete="CASCADE"),
         nullable=False,
-        index=True
+        index=True,
     )
 
     # Evidence details
-    evidence_type = Column(Enum(EvidenceType), nullable=False, index=True)
+    evidence_type = Column(Enum(EvidenceType), nullable=False, index=True)  # type: ignore[var-annotated]
     evidence_data = Column(JSON, nullable=True)
 
     # Storage reference for large files (legacy)

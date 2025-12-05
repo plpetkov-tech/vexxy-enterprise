@@ -3,15 +3,16 @@ Retry utilities with exponential backoff
 
 Provides robust retry logic for transient failures
 """
+
 import time
 import logging
-from typing import Callable, TypeVar, Optional, Tuple, Type
+from typing import Callable, TypeVar, Optional, Tuple, Type, Awaitable, Coroutine, Any
 from functools import wraps
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 @dataclass
@@ -26,6 +27,7 @@ class RetryConfig:
         exponential_base: Base for exponential backoff calculation
         jitter: Add randomness to delay to prevent thundering herd
     """
+
     max_attempts: int = 3
     initial_delay: float = 1.0
     max_delay: float = 60.0
@@ -36,7 +38,7 @@ class RetryConfig:
 def retry_with_backoff(
     exceptions: Tuple[Type[Exception], ...] = (Exception,),
     config: Optional[RetryConfig] = None,
-    on_retry: Optional[Callable[[Exception, int], None]] = None
+    on_retry: Optional[Callable[[Exception, int], None]] = None,
 ):
     """
     Decorator for retrying functions with exponential backoff
@@ -75,21 +77,23 @@ def retry_with_backoff(
                                 "function": func.__name__,
                                 "attempts": config.max_attempts,
                                 "exception": str(e),
-                                "exception_type": type(e).__name__
-                            }
+                                "exception_type": type(e).__name__,
+                            },
                         )
                         raise
 
                     # Calculate delay with exponential backoff
                     delay = min(
-                        config.initial_delay * (config.exponential_base ** (attempt - 1)),
-                        config.max_delay
+                        config.initial_delay
+                        * (config.exponential_base ** (attempt - 1)),
+                        config.max_delay,
                     )
 
                     # Add jitter if enabled
                     if config.jitter:
                         import random
-                        delay *= (0.5 + random.random() * 0.5)
+
+                        delay *= 0.5 + random.random() * 0.5
 
                     logger.warning(
                         f"Function {func.__name__} failed (attempt {attempt}/{config.max_attempts}), retrying in {delay:.2f}s",
@@ -99,8 +103,8 @@ def retry_with_backoff(
                             "max_attempts": config.max_attempts,
                             "delay": delay,
                             "exception": str(e),
-                            "exception_type": type(e).__name__
-                        }
+                            "exception_type": type(e).__name__,
+                        },
                     )
 
                     # Call retry callback if provided
@@ -116,6 +120,7 @@ def retry_with_backoff(
             # This should never be reached, but just in case
             if last_exception:
                 raise last_exception
+            raise RuntimeError(f"Function {func.__name__} failed without exception")
 
         return wrapper
 
@@ -125,7 +130,7 @@ def retry_with_backoff(
 def retry_async_with_backoff(
     exceptions: Tuple[Type[Exception], ...] = (Exception,),
     config: Optional[RetryConfig] = None,
-    on_retry: Optional[Callable[[Exception, int], None]] = None
+    on_retry: Optional[Callable[[Exception, int], None]] = None,
 ):
     """
     Decorator for retrying async functions with exponential backoff
@@ -148,7 +153,7 @@ def retry_async_with_backoff(
     if config is None:
         config = RetryConfig()
 
-    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+    def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Coroutine[Any, Any, T]]:
         @wraps(func)
         async def wrapper(*args, **kwargs) -> T:
             last_exception = None
@@ -166,21 +171,23 @@ def retry_async_with_backoff(
                                 "function": func.__name__,
                                 "attempts": config.max_attempts,
                                 "exception": str(e),
-                                "exception_type": type(e).__name__
-                            }
+                                "exception_type": type(e).__name__,
+                            },
                         )
                         raise
 
                     # Calculate delay with exponential backoff
                     delay = min(
-                        config.initial_delay * (config.exponential_base ** (attempt - 1)),
-                        config.max_delay
+                        config.initial_delay
+                        * (config.exponential_base ** (attempt - 1)),
+                        config.max_delay,
                     )
 
                     # Add jitter if enabled
                     if config.jitter:
                         import random
-                        delay *= (0.5 + random.random() * 0.5)
+
+                        delay *= 0.5 + random.random() * 0.5
 
                     logger.warning(
                         f"Async function {func.__name__} failed (attempt {attempt}/{config.max_attempts}), retrying in {delay:.2f}s",
@@ -190,8 +197,8 @@ def retry_async_with_backoff(
                             "max_attempts": config.max_attempts,
                             "delay": delay,
                             "exception": str(e),
-                            "exception_type": type(e).__name__
-                        }
+                            "exception_type": type(e).__name__,
+                        },
                     )
 
                     # Call retry callback if provided
@@ -207,8 +214,9 @@ def retry_async_with_backoff(
             # This should never be reached, but just in case
             if last_exception:
                 raise last_exception
+            raise RuntimeError(f"Async function {func.__name__} failed without exception")
 
-        return wrapper
+        return wrapper  # type: ignore[return-value]
 
     return decorator
 
@@ -229,7 +237,7 @@ class CircuitBreaker:
         self,
         failure_threshold: int = 5,
         recovery_timeout: float = 60.0,
-        expected_exception: Type[Exception] = Exception
+        expected_exception: Type[Exception] = Exception,
     ):
         """
         Initialize circuit breaker
@@ -244,7 +252,7 @@ class CircuitBreaker:
         self.expected_exception = expected_exception
 
         self.failure_count = 0
-        self.last_failure_time = None
+        self.last_failure_time: float | None = None
         self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
 
     def call(self, func: Callable[..., T], *args, **kwargs) -> T:
@@ -264,7 +272,10 @@ class CircuitBreaker:
         """
         if self.state == "OPEN":
             # Check if recovery timeout has passed
-            if self.last_failure_time and time.time() - self.last_failure_time >= self.recovery_timeout:
+            if (
+                self.last_failure_time
+                and time.time() - self.last_failure_time >= self.recovery_timeout
+            ):
                 logger.info("Circuit breaker entering HALF_OPEN state")
                 self.state = "HALF_OPEN"
             else:
@@ -290,8 +301,8 @@ class CircuitBreaker:
                 extra={
                     "state": self.state,
                     "failure_count": self.failure_count,
-                    "exception": str(e)
-                }
+                    "exception": str(e),
+                },
             )
 
             # Open circuit if threshold exceeded

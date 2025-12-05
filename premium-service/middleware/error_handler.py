@@ -3,20 +3,21 @@ Global error handler middleware
 
 Provides consistent error responses across the API
 """
+
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import logging
-import traceback
-from typing import Union
 
 from exceptions import VexxyException
 
 logger = logging.getLogger(__name__)
 
 
-async def vexxy_exception_handler(request: Request, exc: VexxyException) -> JSONResponse:
+async def vexxy_exception_handler(
+    request: Request, exc: VexxyException
+) -> JSONResponse:
     """
     Handle VexxyException and return structured error response
 
@@ -35,21 +36,20 @@ async def vexxy_exception_handler(request: Request, exc: VexxyException) -> JSON
             "correlation_id": correlation_id,
             "error_code": exc.error_code,
             "details": exc.details,
-            "path": request.url.path
-        }
+            "path": request.url.path,
+        },
     )
 
     error_response = exc.to_dict()
     if correlation_id:
         error_response["request_id"] = correlation_id
 
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=error_response
-    )
+    return JSONResponse(status_code=exc.status_code, content=error_response)
 
 
-async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+async def validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
     """
     Handle Pydantic validation errors
 
@@ -67,28 +67,27 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         extra={
             "correlation_id": correlation_id,
             "path": request.url.path,
-            "errors": exc.errors()
-        }
+            "errors": exc.errors(),
+        },
     )
 
     error_response = {
         "error": "VALIDATION_ERROR",
         "message": "Request validation failed",
-        "details": {
-            "errors": exc.errors()
-        }
+        "details": {"errors": exc.errors()},
     }
 
     if correlation_id:
         error_response["request_id"] = correlation_id
 
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-        content=error_response
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content=error_response
     )
 
 
-async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+async def http_exception_handler(
+    request: Request, exc: StarletteHTTPException
+) -> JSONResponse:
     """
     Handle HTTP exceptions
 
@@ -106,23 +105,16 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
         extra={
             "correlation_id": correlation_id,
             "status_code": exc.status_code,
-            "path": request.url.path
-        }
+            "path": request.url.path,
+        },
     )
 
-    error_response = {
-        "error": "HTTP_ERROR",
-        "message": str(exc.detail),
-        "details": {}
-    }
+    error_response = {"error": "HTTP_ERROR", "message": str(exc.detail), "details": {}}
 
     if correlation_id:
         error_response["request_id"] = correlation_id
 
-    return JSONResponse(
-        status_code=exc.status_code,
-        content=error_response
-    )
+    return JSONResponse(status_code=exc.status_code, content=error_response)
 
 
 async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -144,25 +136,22 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
         extra={
             "correlation_id": correlation_id,
             "path": request.url.path,
-            "exception_type": type(exc).__name__
+            "exception_type": type(exc).__name__,
         },
-        exc_info=True
+        exc_info=True,
     )
 
     error_response = {
         "error": "INTERNAL_ERROR",
         "message": "An internal error occurred",
-        "details": {
-            "type": type(exc).__name__
-        }
+        "details": {"type": type(exc).__name__},
     }
 
     if correlation_id:
         error_response["request_id"] = correlation_id
 
     return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content=error_response
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=error_response
     )
 
 

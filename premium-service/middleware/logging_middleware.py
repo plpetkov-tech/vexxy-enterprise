@@ -3,6 +3,7 @@ Structured logging middleware
 
 Provides JSON-formatted logging with request/response context
 """
+
 import time
 import logging
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -42,8 +43,8 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
                 "path": request.url.path,
                 "query_params": str(request.query_params),
                 "client_host": request.client.host if request.client else None,
-                "user_agent": request.headers.get("user-agent")
-            }
+                "user_agent": request.headers.get("user-agent"),
+            },
         )
 
         # Process request
@@ -61,9 +62,9 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
                     "path": request.url.path,
                     "duration_ms": round(duration * 1000, 2),
                     "exception": str(exc),
-                    "exception_type": type(exc).__name__
+                    "exception_type": type(exc).__name__,
                 },
-                exc_info=True
+                exc_info=True,
             )
             raise
 
@@ -79,8 +80,8 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
                 "method": request.method,
                 "path": request.url.path,
                 "status_code": response.status_code,
-                "duration_ms": round(duration * 1000, 2)
-            }
+                "duration_ms": round(duration * 1000, 2),
+            },
         )
 
         # Add timing header
@@ -117,11 +118,28 @@ class JsonFormatter(logging.Formatter):
         # Add all extra fields from the record
         for key, value in record.__dict__.items():
             if key not in [
-                "name", "msg", "args", "created", "filename", "funcName",
-                "levelname", "levelno", "lineno", "module", "msecs",
-                "message", "pathname", "process", "processName",
-                "relativeCreated", "thread", "threadName", "exc_info",
-                "exc_text", "stack_info", "taskName"
+                "name",
+                "msg",
+                "args",
+                "created",
+                "filename",
+                "funcName",
+                "levelname",
+                "levelno",
+                "lineno",
+                "module",
+                "msecs",
+                "message",
+                "pathname",
+                "process",
+                "processName",
+                "relativeCreated",
+                "thread",
+                "threadName",
+                "exc_info",
+                "exc_text",
+                "stack_info",
+                "taskName",
             ]:
                 log_data[key] = value
 

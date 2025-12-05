@@ -4,7 +4,8 @@ Reachability Analyzer
 Determines if CVEs are reachable based on runtime execution evidence.
 This is the core premium feature - proving vulnerability reachability.
 """
-from typing import Dict, List, Set, Optional, Tuple
+
+from typing import Dict, List, Optional, Tuple
 import logging
 from dataclasses import dataclass
 from enum import Enum
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 class VulnerabilityStatus(str, Enum):
     """VEX vulnerability status values"""
+
     AFFECTED = "affected"
     NOT_AFFECTED = "not_affected"
     UNDER_INVESTIGATION = "under_investigation"
@@ -24,16 +26,20 @@ class VulnerabilityStatus(str, Enum):
 
 class VexJustification(str, Enum):
     """OpenVEX justification codes"""
+
     COMPONENT_NOT_PRESENT = "component_not_present"
     VULNERABLE_CODE_NOT_PRESENT = "vulnerable_code_not_present"
     VULNERABLE_CODE_NOT_IN_EXECUTE_PATH = "vulnerable_code_not_in_execute_path"
-    VULNERABLE_CODE_CANNOT_BE_CONTROLLED_BY_ADVERSARY = "vulnerable_code_cannot_be_controlled_by_adversary"
+    VULNERABLE_CODE_CANNOT_BE_CONTROLLED_BY_ADVERSARY = (
+        "vulnerable_code_cannot_be_controlled_by_adversary"
+    )
     INLINE_MITIGATIONS_ALREADY_EXIST = "inline_mitigations_already_exist"
 
 
 @dataclass
 class ReachabilityResult:
     """Result of reachability analysis for a single CVE"""
+
     cve_id: str
     status: VulnerabilityStatus
     justification: Optional[VexJustification]
@@ -53,7 +59,7 @@ class ReachabilityResult:
             "reason": self.reason,
             "vulnerable_files": self.vulnerable_files,
             "executed_files": self.executed_files,
-            "evidence": self.evidence
+            "evidence": self.evidence,
         }
 
 
@@ -82,11 +88,13 @@ class CVEMapper:
         vulnerable_files = []
 
         # Extract component information
-        component_name = component.get('name', '')
-        component_version = component.get('version', '')
-        purl = component.get('purl', '')
+        component_name = component.get("name", "")
+        component_version = component.get("version", "")
+        purl = component.get("purl", "")
 
-        logger.debug(f"Mapping {cve_id} to files in {component_name}@{component_version}")
+        logger.debug(
+            f"Mapping {cve_id} to files in {component_name}@{component_version}"
+        )
 
         # Strategy 1: Use PURL to identify file locations
         if purl:
@@ -94,22 +102,22 @@ class CVEMapper:
             vulnerable_files.extend(files)
 
         # Strategy 2: Use component type and name
-        comp_type = component.get('type', '')
-        if comp_type == 'library':
+        comp_type = component.get("type", "")
+        if comp_type == "library":
             files = self._library_to_files(component_name)
             vulnerable_files.extend(files)
 
         # Strategy 3: Check common locations for packages
-        if 'python' in component_name.lower() or comp_type == 'pypi':
+        if "python" in component_name.lower() or comp_type == "pypi":
             vulnerable_files.extend(self._python_package_files(component_name))
-        elif 'npm' in purl or comp_type == 'npm':
+        elif "npm" in purl or comp_type == "npm":
             vulnerable_files.extend(self._npm_package_files(component_name))
-        elif 'maven' in purl or comp_type == 'maven':
+        elif "maven" in purl or comp_type == "maven":
             vulnerable_files.extend(self._java_package_files(component_name))
 
         # Strategy 4: Use CVE-specific database (if available)
         if cve_id in self.cve_database:
-            cve_files = self.cve_database[cve_id].get('files', [])
+            cve_files = self.cve_database[cve_id].get("files", [])
             vulnerable_files.extend(cve_files)
 
         # Remove duplicates
@@ -118,7 +126,10 @@ class CVEMapper:
         if not vulnerable_files:
             logger.warning(f"Could not map {cve_id} to specific files")
             # Fallback: guess based on component name
-            vulnerable_files = [f"/usr/lib/{component_name}", f"/usr/local/lib/{component_name}"]
+            vulnerable_files = [
+                f"/usr/lib/{component_name}",
+                f"/usr/local/lib/{component_name}",
+            ]
 
         logger.info(f"Mapped {cve_id} to {len(vulnerable_files)} files")
         return vulnerable_files
@@ -129,16 +140,16 @@ class CVEMapper:
 
         # Extract package name from PURL
         # Example: pkg:pypi/flask@2.0.0 -> /usr/local/lib/python3.11/site-packages/flask/
-        if 'pkg:' in purl:
-            parts = purl.split('/')
+        if "pkg:" in purl:
+            parts = purl.split("/")
             if len(parts) >= 2:
-                package = parts[-1].split('@')[0]
+                package = parts[-1].split("@")[0]
 
-                if 'pypi' in purl:
+                if "pypi" in purl:
                     files.append(f"/usr/local/lib/python3.*/site-packages/{package}/")
-                elif 'npm' in purl:
+                elif "npm" in purl:
                     files.append(f"/usr/local/lib/node_modules/{package}/")
-                elif 'maven' in purl:
+                elif "maven" in purl:
                     files.append(f"/usr/share/java/{package}.jar")
 
         return files
@@ -192,7 +203,7 @@ class ReachabilityAnalyzer:
         cve_id: str,
         component: Dict,
         execution_profile: ExecutionProfile,
-        sbom: Dict
+        sbom: Dict,
     ) -> ReachabilityResult:
         """
         Analyze if a CVE is reachable based on execution evidence
@@ -216,17 +227,12 @@ class ReachabilityAnalyzer:
 
         # Step 3: Determine reachability
         reachability = self._determine_reachability(
-            vulnerable_files,
-            executed_files,
-            execution_profile
+            vulnerable_files, executed_files, execution_profile
         )
 
         # Step 4: Calculate confidence score
         confidence = self._calculate_confidence(
-            reachability,
-            execution_profile,
-            vulnerable_files,
-            executed_files
+            reachability, execution_profile, vulnerable_files, executed_files
         )
 
         # Step 5: Generate result
@@ -236,7 +242,7 @@ class ReachabilityAnalyzer:
             confidence,
             vulnerable_files,
             executed_files,
-            execution_profile
+            execution_profile,
         )
 
         logger.info(
@@ -250,7 +256,7 @@ class ReachabilityAnalyzer:
         self,
         vulnerable_files: List[str],
         executed_files: List[str],
-        profile: ExecutionProfile
+        profile: ExecutionProfile,
     ) -> Tuple[VulnerabilityStatus, Optional[VexJustification]]:
         """
         Determine if vulnerable code is reachable
@@ -282,14 +288,14 @@ class ReachabilityAnalyzer:
                 # Library loaded but not executed - medium confidence not affected
                 return (
                     VulnerabilityStatus.NOT_AFFECTED,
-                    VexJustification.VULNERABLE_CODE_NOT_IN_EXECUTE_PATH
+                    VexJustification.VULNERABLE_CODE_NOT_IN_EXECUTE_PATH,
                 )
 
         # No match found - code not executed
         logger.debug("No match found - vulnerable code not in execute path")
         return (
             VulnerabilityStatus.NOT_AFFECTED,
-            VexJustification.VULNERABLE_CODE_NOT_IN_EXECUTE_PATH
+            VexJustification.VULNERABLE_CODE_NOT_IN_EXECUTE_PATH,
         )
 
     def _path_matches(self, pattern: str, path: str) -> bool:
@@ -298,7 +304,7 @@ class ReachabilityAnalyzer:
 
         # Convert shell-style wildcards to regex
         # /usr/lib/python3.*/site-packages/flask/ -> /usr/lib/python3\..*/site-packages/flask/
-        pattern = pattern.replace('.', r'\.').replace('*', '.*')
+        pattern = pattern.replace(".", r"\.").replace("*", ".*")
 
         try:
             return bool(re.match(pattern, path))
@@ -310,7 +316,7 @@ class ReachabilityAnalyzer:
         reachability: Tuple[VulnerabilityStatus, Optional[VexJustification]],
         profile: ExecutionProfile,
         vulnerable_files: List[str],
-        executed_files: List[str]
+        executed_files: List[str],
     ) -> float:
         """
         Calculate confidence score (0.0 - 1.0)
@@ -332,7 +338,9 @@ class ReachabilityAnalyzer:
             base_confidence = 0.7
 
         # Adjust for code coverage (if available)
-        coverage_factor = min(len(executed_files) / 100, 1.0)  # Normalize by typical file count
+        coverage_factor = min(
+            len(executed_files) / 100, 1.0
+        )  # Normalize by typical file count
         confidence = base_confidence + (coverage_factor * 0.1)
 
         # Adjust for test duration (longer = more thorough)
@@ -361,7 +369,7 @@ class ReachabilityAnalyzer:
         confidence: float,
         vulnerable_files: List[str],
         executed_files: List[str],
-        profile: ExecutionProfile
+        profile: ExecutionProfile,
     ) -> ReachabilityResult:
         """Create reachability result"""
         status, justification = reachability
@@ -385,7 +393,7 @@ class ReachabilityAnalyzer:
         evidence = {
             "vulnerable_files": vulnerable_files,
             "executed_files": executed_files[:50],  # Limit for storage
-            "execution_summary": profile.to_dict()['summary'],
+            "execution_summary": profile.to_dict()["summary"],
             "test_duration_seconds": profile.duration_seconds,
             "total_syscalls": sum(profile.syscall_counts.values()),
             "unique_syscalls": len(profile.syscalls),
@@ -401,14 +409,14 @@ class ReachabilityAnalyzer:
             reason=reason,
             vulnerable_files=vulnerable_files,
             executed_files=executed_files,
-            evidence=evidence
+            evidence=evidence,
         )
 
     def analyze_all_cves(
         self,
         vulnerabilities: List[Dict],
         execution_profile: ExecutionProfile,
-        sbom: Dict
+        sbom: Dict,
     ) -> List[ReachabilityResult]:
         """
         Analyze reachability for all CVEs in the SBOM
@@ -427,14 +435,14 @@ class ReachabilityAnalyzer:
 
         for vuln in vulnerabilities:
             try:
-                cve_id = vuln.get('id', vuln.get('cve_id', 'UNKNOWN'))
-                component = vuln.get('affects', [{}])[0] if vuln.get('affects') else {}
+                cve_id = vuln.get("id", vuln.get("cve_id", "UNKNOWN"))
+                component = vuln.get("affects", [{}])[0] if vuln.get("affects") else {}
 
                 result = self.analyze_cve_reachability(
                     cve_id=cve_id,
                     component=component,
                     execution_profile=execution_profile,
-                    sbom=sbom
+                    sbom=sbom,
                 )
 
                 results.append(result)
@@ -444,7 +452,9 @@ class ReachabilityAnalyzer:
                 # Continue with other CVEs
 
         # Summary
-        not_affected = sum(1 for r in results if r.status == VulnerabilityStatus.NOT_AFFECTED)
+        not_affected = sum(
+            1 for r in results if r.status == VulnerabilityStatus.NOT_AFFECTED
+        )
         affected = sum(1 for r in results if r.status == VulnerabilityStatus.AFFECTED)
 
         logger.info(
