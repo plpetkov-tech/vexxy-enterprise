@@ -6,14 +6,24 @@ import sys
 from typing import Generator
 from unittest.mock import MagicMock, Mock
 
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
 from models.database import Base
+
+# Import fixtures from fixture modules to make them available to all tests
+from tests.fixtures.k8s_mocks import (
+    mock_apps_v1_api,
+    mock_core_v1_api,
+    mock_custom_objects_api,
+    mock_batch_v1_api,
+    mock_dynamic_client,
+    mock_k8s_clients,
+)
 
 
 @pytest.fixture(scope="session")

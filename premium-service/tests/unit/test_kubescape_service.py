@@ -4,14 +4,12 @@ Unit tests for Kubescape Service.
 Tests the core functionality of Kubescape integration without requiring a real cluster.
 """
 import pytest
-from unittest.mock import Mock, MagicMock, patch, call
+from unittest.mock import Mock, patch
 from kubernetes.client.rest import ApiException
-from datetime import datetime
 
 # Import fixtures
 from tests.fixtures.k8s_mocks import (
     create_mock_deployment,
-    create_mock_pod,
     create_mock_crd,
     setup_deployment_success,
     setup_crd_extraction,
@@ -86,8 +84,10 @@ def test_kubescape_service_init_config_load_failure(mock_k8s_config):
         with pytest.raises(KubernetesError) as exc_info:
             KubescapeService()
 
-        assert exc_info.value.operation == "load_config"
-        assert "Config error" in exc_info.value.error
+        # Check the error message contains the operation and error text
+        assert "load_config" in exc_info.value.message
+        assert "Config error" in exc_info.value.message
+        assert exc_info.value.error_code == "EXTERNAL_SERVICE_ERROR"
 
 
 # =============================================================================

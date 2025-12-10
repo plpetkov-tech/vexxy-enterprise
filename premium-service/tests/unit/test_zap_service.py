@@ -42,8 +42,13 @@ def zap_service(mock_settings):
 
 @pytest.mark.unit
 @pytest.mark.zap
-def test_zap_service_init():
+@patch('services.owasp_zap.socket.gethostbyname')
+def test_zap_service_init(mock_gethostbyname):
     """Test ZAPService initialization."""
+    # Mock socket to raise error so localhost is used as-is
+    import socket
+    mock_gethostbyname.side_effect = socket.gaierror("DNS resolution failed")
+
     service = ZAPService(
         zap_host="localhost",
         zap_port=8080,
@@ -53,19 +58,28 @@ def test_zap_service_init():
     assert service.zap_host == "localhost"
     assert service.zap_port == 8080
     assert service.zap_api_key == "test-api-key"
-    assert service.base_url == "http://localhost:8080"
+    assert service.zap_url == "http://localhost:8080"
     assert service.session is not None
 
 
 @pytest.mark.unit
 @pytest.mark.zap
-def test_zap_service_init_with_defaults(mock_settings):
+@patch('services.owasp_zap.socket.gethostbyname')
+def test_zap_service_init_with_defaults(mock_gethostbyname, mock_settings):
     """Test ZAPService uses defaults from settings."""
+    # Mock socket to raise error so the provided host is used as-is
+    import socket
+    mock_gethostbyname.side_effect = socket.gaierror("DNS resolution failed")
+
     mock_settings.zap_host = "zap.example.com"
     mock_settings.zap_port = 9090
     mock_settings.zap_api_key = "key123"
 
-    service = ZAPService()
+    service = ZAPService(
+        zap_host="zap.example.com",
+        zap_port=9090,
+        zap_api_key="key123",
+    )
 
     assert service.zap_host == "zap.example.com"
     assert service.zap_port == 9090
@@ -85,7 +99,7 @@ def test_is_zap_available_success(zap_service):
     # Mock ZAP version endpoint
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/view/version/",
+        f"{zap_service.zap_url}/JSON/core/view/version/",
         json=get_sample_zap_version_response(),
         status=200,
     )
@@ -105,7 +119,7 @@ def test_is_zap_available_failure(zap_service):
     # Mock ZAP endpoint to return error
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/view/version/",
+        f"{zap_service.zap_url}/JSON/core/view/version/",
         json={"error": "Service unavailable"},
         status=503,
     )
@@ -125,7 +139,7 @@ def test_is_zap_available_timeout(zap_service):
     # Mock timeout exception
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/view/version/",
+        f"{zap_service.zap_url}/JSON/core/view/version/",
         body=Exception("Connection timeout"),
     )
 
@@ -153,43 +167,43 @@ def test_scan_target_success(zap_service):
     # Mock ZAP API endpoints
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/action/newSession/",
+        f"{zap_service.zap_url}/JSON/core/action/newSession/",
         json={"Result": "OK"},
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/action/accessUrl/",
+        f"{zap_service.zap_url}/JSON/core/action/accessUrl/",
         json={"Result": "OK"},
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/spider/action/scan/",
+        f"{zap_service.zap_url}/JSON/spider/action/scan/",
         json={"scan": "1"},
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/spider/view/status/",
+        f"{zap_service.zap_url}/JSON/spider/view/status/",
         json=get_sample_zap_spider_status(100),  # 100% complete
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/ascan/action/scan/",
+        f"{zap_service.zap_url}/JSON/ascan/action/scan/",
         json={"scan": "1"},
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/ascan/view/status/",
+        f"{zap_service.zap_url}/JSON/ascan/view/status/",
         json=get_sample_zap_ascan_status(100),  # 100% complete
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/view/alerts/",
+        f"{zap_service.zap_url}/JSON/core/view/alerts/",
         json=get_sample_zap_alerts_response(),
         status=200,
     )
@@ -215,31 +229,31 @@ def test_scan_target_quick_mode(zap_service):
     # Mock ZAP API endpoints - quick mode skips spider
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/action/newSession/",
+        f"{zap_service.zap_url}/JSON/core/action/newSession/",
         json={"Result": "OK"},
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/action/accessUrl/",
+        f"{zap_service.zap_url}/JSON/core/action/accessUrl/",
         json={"Result": "OK"},
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/ascan/action/scan/",
+        f"{zap_service.zap_url}/JSON/ascan/action/scan/",
         json={"scan": "1"},
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/ascan/view/status/",
+        f"{zap_service.zap_url}/JSON/ascan/view/status/",
         json=get_sample_zap_ascan_status(100),
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/view/alerts/",
+        f"{zap_service.zap_url}/JSON/core/view/alerts/",
         json=get_sample_zap_alerts_response(),
         status=200,
     )
@@ -264,43 +278,43 @@ def test_scan_target_medium_mode(zap_service):
     # Mock ZAP API endpoints - medium mode includes spider
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/action/newSession/",
+        f"{zap_service.zap_url}/JSON/core/action/newSession/",
         json={"Result": "OK"},
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/action/accessUrl/",
+        f"{zap_service.zap_url}/JSON/core/action/accessUrl/",
         json={"Result": "OK"},
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/spider/action/scan/",
+        f"{zap_service.zap_url}/JSON/spider/action/scan/",
         json={"scan": "1"},
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/spider/view/status/",
+        f"{zap_service.zap_url}/JSON/spider/view/status/",
         json=get_sample_zap_spider_status(100),
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/ascan/action/scan/",
+        f"{zap_service.zap_url}/JSON/ascan/action/scan/",
         json={"scan": "1"},
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/ascan/view/status/",
+        f"{zap_service.zap_url}/JSON/ascan/view/status/",
         json=get_sample_zap_ascan_status(100),
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/view/alerts/",
+        f"{zap_service.zap_url}/JSON/core/view/alerts/",
         json=get_sample_zap_alerts_response(),
         status=200,
     )
@@ -325,7 +339,7 @@ def test_scan_target_api_error(zap_service):
     # Mock ZAP API to return error
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/action/newSession/",
+        f"{zap_service.zap_url}/JSON/core/action/newSession/",
         json={"error": "Internal error"},
         status=500,
     )
@@ -425,31 +439,31 @@ def test_scan_kubernetes_service(zap_service):
     # Mock ZAP API endpoints
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/action/newSession/",
+        f"{zap_service.zap_url}/JSON/core/action/newSession/",
         json={"Result": "OK"},
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/action/accessUrl/",
+        f"{zap_service.zap_url}/JSON/core/action/accessUrl/",
         json={"Result": "OK"},
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/ascan/action/scan/",
+        f"{zap_service.zap_url}/JSON/ascan/action/scan/",
         json={"scan": "1"},
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/ascan/view/status/",
+        f"{zap_service.zap_url}/JSON/ascan/view/status/",
         json=get_sample_zap_ascan_status(100),
         status=200,
     )
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/view/alerts/",
+        f"{zap_service.zap_url}/JSON/core/view/alerts/",
         json=get_sample_zap_alerts_response(),
         status=200,
     )
@@ -482,7 +496,7 @@ def test_call_zap_api_success(zap_service):
     # Mock ZAP API endpoint
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/view/version/",
+        f"{zap_service.zap_url}/JSON/core/view/version/",
         json=get_sample_zap_version_response(),
         status=200,
     )
@@ -508,7 +522,7 @@ def test_call_zap_api_with_params(zap_service):
     # Mock ZAP API endpoint
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/spider/action/scan/",
+        f"{zap_service.zap_url}/JSON/spider/action/scan/",
         json={"scan": "1"},
         status=200,
     )
@@ -535,7 +549,7 @@ def test_call_zap_api_error_response(zap_service):
     # Mock ZAP API endpoint to return error
     responses.add(
         responses.GET,
-        f"{zap_service.base_url}/JSON/core/view/version/",
+        f"{zap_service.zap_url}/JSON/core/view/version/",
         json={"error": "Internal error"},
         status=500,
     )
@@ -637,15 +651,15 @@ def test_zap_service_different_ports():
     """Test ZAPService with various port configurations."""
     # Standard port
     service1 = ZAPService(zap_host="localhost", zap_port=8080)
-    assert service1.base_url == "http://localhost:8080"
+    assert service1.zap_url == "http://localhost:8080"
 
     # Non-standard port
     service2 = ZAPService(zap_host="localhost", zap_port=9090)
-    assert service2.base_url == "http://localhost:9090"
+    assert service2.zap_url == "http://localhost:9090"
 
     # HTTPS port (443)
     service3 = ZAPService(zap_host="localhost", zap_port=443)
-    assert service3.base_url == "http://localhost:443"  # ZAP API is always HTTP
+    assert service3.zap_url == "http://localhost:443"  # ZAP API is always HTTP
 
 
 @pytest.mark.unit
@@ -658,4 +672,4 @@ def test_zap_service_cluster_dns():
     )
 
     assert service.zap_host == "owasp-zap.security.svc.cluster.local"
-    assert "svc.cluster.local" in service.base_url
+    assert "svc.cluster.local" in service.zap_url

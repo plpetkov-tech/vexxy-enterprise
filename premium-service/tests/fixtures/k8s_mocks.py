@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 from kubernetes.client import (
-    V1Container,
     V1ContainerStatus,
     V1Deployment,
     V1DeploymentCondition,

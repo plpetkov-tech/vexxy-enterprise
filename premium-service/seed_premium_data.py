@@ -4,13 +4,13 @@ Seed premium database with test users and organizations
 """
 import os
 import sys
-from datetime import datetime, timedelta
 from pathlib import Path
-from uuid import uuid4, UUID
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
+from datetime import datetime, timedelta
+from uuid import uuid4, UUID
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 

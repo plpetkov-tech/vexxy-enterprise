@@ -105,7 +105,7 @@ def get_sample_zap_alerts(num_alerts: int = 3) -> List[Dict[str, Any]]:
             **template,
             "url": f"http://test-service.default.svc.cluster.local:8080/api/endpoint{i}",
             "param": f"param{i}",
-            "attack": f"test' OR '1'='1",
+            "attack": "test' OR '1'='1",
             "evidence": f"SQL error message {i}",
             "alertRef": f"{template['pluginid']}-{i}",
             "sourceid": "1",
@@ -219,7 +219,7 @@ def get_sample_security_findings(
             "findings": [
                 {
                     "tool": "nmap",
-                    "finding": f"Open port 8080/tcp - nginx",
+                    "finding": "Open port 8080/tcp - nginx",
                     "severity": "informational",
                 }
                 for _ in range(pentest_findings)
