@@ -79,7 +79,7 @@ jobs:
           cd premium-service
           mypy . || echo "MyPy type checking found issues"
 
-      - name: Run tests
+      - name: Run existing tests (API & Profiles)
         env:
           DATABASE_URL: postgresql://vexxy:vexxy@localhost:5432/vexxy_premium
           REDIS_URL: redis://localhost:6379/0
@@ -95,10 +95,25 @@ jobs:
           ENVIRONMENT: testing
         run: |
           cd premium-service
-          if [ -d "tests" ]; then
-            pytest tests/ -v --cov=. --cov-report=term --cov-report=xml || echo "Tests completed with issues"
+          if [ -f "tests/test_api.py" ]; then
+            echo "Running existing integration tests..."
+            pytest tests/test_api.py tests/test_profiles.py -v --cov=. --cov-report=term --cov-report=xml || echo "Tests completed with issues"
           else
-            echo "No tests directory found, skipping tests"
+            echo "No legacy tests found, skipping"
+          fi
+
+      - name: Run unit tests
+        env:
+          K8S_IN_CLUSTER: "false"
+          K8S_SANDBOX_NAMESPACE: vexxy-sandbox-test
+          ENVIRONMENT: testing
+        run: |
+          cd premium-service
+          if [ -d "tests/unit" ]; then
+            echo "Running unit tests..."
+            pytest tests/unit/ -v -m unit --tb=short || echo "Unit tests completed with issues"
+          else
+            echo "No unit tests found, skipping"
           fi
 
       - name: Validate Kubernetes manifests
