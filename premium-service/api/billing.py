@@ -389,3 +389,148 @@ async def cancel_subscription(
             subscription.canceled_at.isoformat() if subscription.canceled_at else None
         ),
     }
+
+
+# ============================================================================
+# Sync Endpoints (Core → Premium)
+# ============================================================================
+
+
+class OrganizationSyncRequest(BaseModel):
+    """Request to sync organization from core to premium"""
+
+    org_id: UUID  # Premium org UUID (deterministic from core org_id + slug)
+    core_org_id: int  # Original core organization ID
+    name: str
+    slug: str
+
+
+class UserSyncRequest(BaseModel):
+    """Request to sync user from core to premium"""
+
+    user_id: UUID  # Premium user UUID (deterministic from core user_id + org_slug)
+    core_user_id: int  # Original core user ID
+    email: str
+    organization_id: UUID  # Premium organization UUID
+    is_admin: bool = False
+
+
+@router.post("/organizations/sync")
+async def sync_organization(
+    request: OrganizationSyncRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Sync organization from core service to premium.
+
+    This endpoint is called by the core service when:
+    - A new organization is created with premium access
+    - An existing organization is updated
+
+    Args:
+        request: Organization sync data
+        db: Database session
+
+    Returns:
+        Organization sync result with premium org UUID
+    """
+    # Check if organization already exists
+    org = db.query(Organization).filter(Organization.id == request.org_id).first()
+
+    if org:
+        # Update existing organization
+        org.name = request.name
+        org.slug = request.slug
+        org.updated_at = datetime.utcnow()
+        db.commit()
+        action = "updated"
+    else:
+        # Create new organization
+        org = Organization(
+            id=request.org_id,
+            name=request.name,
+            slug=request.slug,
+            has_premium_access=True,  # Only premium orgs are synced
+        )
+        db.add(org)
+        db.commit()
+        action = "created"
+
+        # Create default FREE subscription for new org
+        subscription = Subscription(
+            organization_id=org.id,
+            tier=SubscriptionTier.FREE,
+            status=SubscriptionStatus.ACTIVE,
+            current_period_start=datetime.utcnow(),
+        )
+        db.add(subscription)
+        db.commit()
+
+    return {
+        "success": True,
+        "action": action,
+        "organization_id": str(org.id),
+        "core_org_id": request.core_org_id,
+        "message": f"Organization {action} successfully",
+    }
+
+
+@router.post("/users/sync")
+async def sync_user(
+    request: UserSyncRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Sync user from core service to premium.
+
+    This endpoint is called by the core service when:
+    - A new user is created in an organization with premium access
+    - An existing user is updated
+
+    Args:
+        request: User sync data
+        db: Database session
+
+    Returns:
+        User sync result with premium user UUID
+    """
+    from models import User
+
+    # Verify organization exists
+    org = db.query(Organization).filter(
+        Organization.id == request.organization_id
+    ).first()
+    if not org:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Organization {request.organization_id} not found. "
+            "Sync organization first.",
+        )
+
+    # Check if user already exists
+    user = db.query(User).filter(User.id == request.user_id).first()
+
+    if user:
+        # Update existing user
+        user.email = request.email
+        user.is_admin = request.is_admin
+        user.updated_at = datetime.utcnow()
+        db.commit()
+        action = "updated"
+    else:
+        # Create new user
+        user = User(
+            id=request.user_id,
+            email=request.email,
+            organization_id=request.organization_id,
+            is_admin=request.is_admin,
+        )
+        db.add(user)
+        db.commit()
+        action = "created"
+
+    return {
+        "success": True,
+        "action": action,
+        "user_id": str(user.id),
+        "core_user_id": request.core_user_id,
+        "message": f"User {action} successfully",
+    }

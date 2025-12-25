@@ -66,8 +66,25 @@ class Settings(BaseSettings):
     s3_endpoint: Optional[str] = None
 
     # Authentication
+    jwt_algorithm: str = "RS256"  # RS256 (asymmetric) or HS256 (symmetric)
+
+    # JWT Secret Key (deprecated - for backward compatibility with HS256)
     jwt_secret_key: str = "change-me-in-production"
-    jwt_algorithm: str = "HS256"
+
+    # RS256 Public Key Path (for asymmetric JWT verification)
+    jwt_public_key_path: str = "/app/secrets/jwt_public.pem"
+
+    @property
+    def jwt_public_key(self) -> Optional[str]:
+        """Load RSA public key for JWT verification (RS256)."""
+        if self.jwt_algorithm != "RS256":
+            return None
+        try:
+            with open(self.jwt_public_key_path, 'r') as f:
+                return f.read()
+        except FileNotFoundError:
+            print(f"WARNING: JWT public key not found at {self.jwt_public_key_path}")
+            return None
 
     # Stripe Integration (Billing)
     stripe_secret_key: str = (

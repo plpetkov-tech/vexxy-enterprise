@@ -30,6 +30,14 @@ spec:
           limits:
             cpu: 2000m      # Allow burst to 2 CPU
             memory: 4Gi     # Hard limit at 4 GB
+        volumeMounts:
+        - name: jwt-keys
+          mountPath: /app/secrets
+          readOnly: true
+      volumes:
+      - name: jwt-keys
+        secret:
+          secretName: jwt-keys
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -139,8 +139,16 @@ class AuthService:
             UnauthorizedError: If token is invalid or expired
         """
         try:
+            # Use RS256 (asymmetric) or HS256 (symmetric) based on configuration
+            if settings.jwt_algorithm == "RS256":
+                key = settings.jwt_public_key
+                if not key:
+                    raise UnauthorizedError("JWT public key not available for RS256 verification")
+            else:
+                key = settings.jwt_secret_key
+
             payload = jwt.decode(
-                token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm]
+                token, key, algorithms=[settings.jwt_algorithm]
             )
             return payload
 
