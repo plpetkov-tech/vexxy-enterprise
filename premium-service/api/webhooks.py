@@ -4,6 +4,7 @@ Stripe Webhook Handler
 Handles incoming webhook events from Stripe for payment and subscription updates.
 """
 
+import httpx
 import logging
 from datetime import datetime
 from typing import Dict, Any
@@ -25,6 +26,62 @@ from services.billing import BillingService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/webhooks", tags=["webhooks"])
+
+
+async def notify_core_subscription_change(
+    org: Organization,
+    subscription_status: SubscriptionStatus,
+    event_type: str,
+):
+    """
+    Notify VEXxy core service about subscription status changes.
+
+    Args:
+        org: Organization that had subscription change
+        subscription_status: New subscription status
+        event_type: Type of event (created, updated, deleted)
+    """
+    if not settings.vexxy_backend_url:
+        logger.warning("VEXXY_BACKEND_URL not set, skipping core notification")
+        return
+
+    try:
+        # Determine if org should have premium access
+        has_premium_access = subscription_status in [
+            SubscriptionStatus.ACTIVE,
+            SubscriptionStatus.TRIALING,
+        ]
+
+        payload = {
+            "core_org_id": org.core_org_id,
+            "premium_org_id": str(org.id),
+            "has_premium_access": has_premium_access,
+            "subscription_status": subscription_status.value,
+            "event_type": event_type,
+        }
+
+        headers = {}
+        if settings.vexxy_api_key:
+            headers["X-API-Key"] = settings.vexxy_api_key
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{settings.vexxy_backend_url}/api/v1/webhooks/premium/subscription",
+                json=payload,
+                headers=headers,
+            )
+
+            if response.status_code == 200:
+                logger.info(
+                    f"Successfully notified core about subscription change for org {org.id}"
+                )
+            else:
+                logger.error(
+                    f"Failed to notify core: {response.status_code} - {response.text}"
+                )
+    except Exception as e:
+        logger.error(f"Exception notifying core about subscription change: {e}")
+        # Don't fail the webhook - core can reconcile later
 
 
 @router.post("/stripe")
@@ -258,6 +315,9 @@ async def handle_subscription_created(
 
     logger.info(f"Subscription created for org {org.id}: {subscription_id}")
 
+    # Notify core service about subscription creation
+    await notify_core_subscription_change(org, db_subscription.status, "subscription.created")
+
 
 async def handle_subscription_updated(
     subscription: Dict[str, Any], db: Session, event_id: str
@@ -316,6 +376,11 @@ async def handle_subscription_updated(
 
     logger.info(f"Subscription updated: {subscription_id} - status: {stripe_status}")
 
+    # Notify core service about subscription update
+    org = db.query(Organization).filter(Organization.id == db_subscription.organization_id).first()
+    if org:
+        await notify_core_subscription_change(org, db_subscription.status, "subscription.updated")
+
 
 async def handle_subscription_deleted(
     subscription: Dict[str, Any], db: Session, event_id: str
@@ -347,6 +412,11 @@ async def handle_subscription_deleted(
     )
 
     logger.info(f"Subscription deleted: {subscription_id}")
+
+    # Notify core service about subscription cancellation
+    org = db.query(Organization).filter(Organization.id == db_subscription.organization_id).first()
+    if org:
+        await notify_core_subscription_change(org, SubscriptionStatus.CANCELED, "subscription.deleted")
 
 
 async def handle_invoice_payment_succeeded(
